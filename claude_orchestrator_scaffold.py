@@ -20,7 +20,7 @@ import os
 from typing import Any, Dict, Tuple, Optional
 
 # Local enforcement layer (already in your repo)
-from constitutional_enforcement import ConstitutionalEnforcer, Decision
+from constitutional_enforcement_interactive import ConstitutionalEnforcer, Decision
 
 
 # ----------------------------
