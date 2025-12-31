@@ -144,6 +144,8 @@ class ConstitutionalEnforcementUI:
             st.session_state.evidence_cache = {}  # Cache EnforcementResults
         if 'approval_comment' not in st.session_state:
             st.session_state.approval_comment = ""
+        if 'demo_results' not in st.session_state:
+            st.session_state.demo_results = []
     
     def render_gate_visualization(self, active_gate: str = None):
         """Render visual representation of gates with active highlighting, flow diagram, and statistics."""
@@ -656,6 +658,43 @@ class ConstitutionalEnforcementUI:
         enforcer.approve(action_id, "ui_user")
         enforcer._log_audit("S-O", tool_name, "APPROVED", "ui_user", ["human_approval"], {"action_id": action_id, "comment": comment})
         
+        # Check if this is part of demo tests
+        if state.get("demo_test"):
+            # Continue demo tests
+            demo_start_from = state.get("demo_start_from", 3)
+            # Execute tool
+            def simulate_tool(tool_name: str, params: dict):
+                if tool_name == "sharepoint_read":
+                    return {"source": "sharepoint", "path": params.get("path"), "content": "Draft policy template v3.2"}
+                if tool_name == "occ_query":
+                    return {"source": "occ_fdic_db", "query": params.get("q"), "content": "OCC interpretive letter excerpt..."}
+                if tool_name == "write_draft":
+                    return {"source": "draft_doc", "doc_id": "DOC-001", "status": "written"}
+                if tool_name == "jira_create":
+                    return {"source": "jira_create_task", "issue_id": "JIRA-101", "status": "created", "title": params.get("title")}
+                return {"source": tool_name, "status": "ok"}
+            
+            raw_result = simulate_tool(tool_name, params)
+            st.session_state.active_gate = "S-I"
+            post = enforcer.post_tool_result(tool_name, raw_result, user_id)
+            st.session_state.active_gate = None
+            
+            # Update demo result for test 2
+            if st.session_state.get('demo_results'):
+                for result in st.session_state.demo_results:
+                    if result.get("test", "").startswith("2."):
+                        result["status"] = "complete"
+                        result["decision"] = post.decision.value
+                        break
+            
+            # Continue with remaining demo tests
+            self.run_demo_tests(start_from=demo_start_from)
+            st.session_state.execution_in_progress = False
+            
+            del st.session_state.execution_state
+            st.rerun()
+            return
+        
         # Execute tool
         raw_result = TOOLS[tool_name](**params)
         
@@ -684,9 +723,9 @@ class ConstitutionalEnforcementUI:
         del st.session_state.execution_state
         
         # Continue with remaining steps if any
-        if 'remaining_tool_calls' in st.session_state:
+        if 'remaining_tool_calls' in st.session_state and st.session_state.remaining_tool_calls:
             self._process_remaining_tool_calls()
-        elif 'pending_response' in st.session_state:
+        elif 'pending_response' in st.session_state and st.session_state.pending_response is not None:
             self._process_response()
         else:
             st.session_state.execution_in_progress = False
@@ -729,13 +768,17 @@ class ConstitutionalEnforcementUI:
             return
         
         # All tool calls done, check if response needed
-        if 'pending_response' in st.session_state:
+        if 'pending_response' in st.session_state and st.session_state.pending_response is not None:
             self._process_response()
         else:
             st.session_state.execution_in_progress = False
     
     def _process_response(self):
         """Process response output."""
+        if 'pending_response' not in st.session_state or st.session_state.pending_response is None:
+            st.session_state.execution_in_progress = False
+            return
+        
         response_config = st.session_state.pending_response
         user_id = st.session_state.scenario_user_id
         
@@ -753,7 +796,8 @@ class ConstitutionalEnforcementUI:
         })
         
         st.session_state.active_gate = None
-        del st.session_state.pending_response
+        if 'pending_response' in st.session_state:
+            del st.session_state.pending_response
         st.session_state.execution_in_progress = False
     
     def run_demo_scenario(self, scenario_name: str, scenario_config: Dict[str, Any]):
@@ -974,65 +1018,180 @@ class ConstitutionalEnforcementUI:
         buffer.seek(0)
         return buffer.getvalue()
     
+    def run_demo_tests(self, start_from: int = 1):
+        """Run the demo tests from constitutional_enforcement_interactive.py."""
+        enforcer = st.session_state.enforcer
+        user_id = "analyst_123"
+        results = st.session_state.get('demo_results', [])
+        
+        # Simulate tool function (same as in the script)
+        def simulate_tool(tool_name: str, params: dict):
+            if tool_name == "sharepoint_read":
+                return {"source": "sharepoint", "path": params.get("path"), "content": "Draft policy template v3.2"}
+            if tool_name == "occ_query":
+                return {"source": "occ_fdic_db", "query": params.get("q"), "content": "OCC interpretive letter excerpt..."}
+            if tool_name == "write_draft":
+                return {"source": "draft_doc", "doc_id": "DOC-001", "status": "written"}
+            if tool_name == "jira_create":
+                return {"source": "jira_create_task", "issue_id": "JIRA-101", "status": "created", "title": params.get("title")}
+            return {"source": tool_name, "status": "ok"}
+        
+        # Demo 1: Allowed tool call (SharePoint read)
+        if start_from <= 1:
+            results.append({"test": "1. Testing S-O: SharePoint Read (should ALLOW)", "status": "running"})
+            st.session_state.active_gate = "S-O"
+            result = enforcer.pre_tool_call("sharepoint_read", {"path": "/policies/draft"}, user_id)
+            st.session_state.active_gate = None
+            results[-1]["status"] = "complete"
+            results[-1]["decision"] = result.decision.value
+            results[-1]["controls"] = result.controls_applied
+        
+        # Demo 2: Tool call requiring approval (Jira create)
+        if start_from <= 2:
+            if len(results) < 2:
+                results.append({"test": "2. Testing S-O: Jira Create (should REQUIRE_APPROVAL)", "status": "running"})
+            st.session_state.active_gate = "S-O"
+            pre = enforcer.pre_tool_call("jira_create", {"title": "Review Q4 policy", "project": "COMP"}, user_id)
+            
+            if pre.decision == Decision.REQUIRE_APPROVAL:
+                # Set up approval request
+                action_id = str(uuid.uuid4())[:8]
+                enforcer.request_approval(action_id, "S-O", "jira_create", user_id, {"params": {"title": "Review Q4 policy", "project": "COMP"}})
+                enforcer._log_audit("S-O", "jira_create", "REQUIRE_APPROVAL", user_id, pre.controls_applied, pre.evidence)
+                
+                st.session_state.pending_approval = {
+                    "action_id": action_id,
+                    "gate": "S-O",
+                    "action": "jira_create",
+                    "details": {"title": "Review Q4 policy", "project": "COMP"},
+                    "reason": "Policy requires human approval for this action",
+                    "evidence": pre.evidence,
+                    "controls": pre.controls_applied
+                }
+                
+                st.session_state.execution_state = {
+                    "step": "waiting_approval",
+                    "tool_name": "jira_create",
+                    "params": {"title": "Review Q4 policy", "project": "COMP"},
+                    "user_id": user_id,
+                    "action_id": action_id,
+                    "demo_test": 2,
+                    "demo_start_from": 3
+                }
+                
+                if len(results) >= 2:
+                    results[1]["status"] = "waiting_approval"
+                    results[1]["decision"] = "REQUIRE_APPROVAL"
+                else:
+                    results[-1]["status"] = "waiting_approval"
+                    results[-1]["decision"] = "REQUIRE_APPROVAL"
+                st.session_state.active_gate = None
+                st.session_state.demo_results = results
+                return results  # Pause for approval
+            
+            # If approved or allowed, continue
+            tool_result = simulate_tool("jira_create", {"title": "Review Q4 policy", "project": "COMP"})
+            st.session_state.active_gate = "S-I"
+            post = enforcer.post_tool_result("jira_create", tool_result, user_id)
+            st.session_state.active_gate = None
+            if len(results) >= 2:
+                results[1]["status"] = "complete"
+                results[1]["decision"] = post.decision.value
+            else:
+                results[-1]["status"] = "complete"
+                results[-1]["decision"] = post.decision.value
+        
+        # Demo 3: Email Send (should DENY)
+        if start_from <= 3:
+            results.append({"test": "3. Testing S-O: Email Send (should DENY - not in allowlist)", "status": "running"})
+            st.session_state.active_gate = "S-O"
+            result = enforcer.pre_tool_call("email_send", {"to": "external@other.com"}, user_id)
+            st.session_state.active_gate = None
+            results[-1]["status"] = "complete"
+            results[-1]["decision"] = result.decision.value
+            results[-1]["reason"] = result.denial_reason
+        
+        # Demo 4: Response with regulatory claim but no citation
+        if start_from <= 4:
+            results.append({"test": "4. Testing U-O: Response with regulatory claim, no citation (should DENY)", "status": "running"})
+            st.session_state.active_gate = "U-O"
+            result = enforcer.pre_response(
+                "OCC requires all banks to maintain capital reserves of 8%.",
+                citations=[],
+                user_id=user_id
+            )
+            st.session_state.active_gate = None
+            results[-1]["status"] = "complete"
+            results[-1]["decision"] = result.decision.value
+            results[-1]["reason"] = result.denial_reason
+        
+        # Demo 5: Response with citation (should pass)
+        if start_from <= 5:
+            results.append({"test": "5. Testing U-O: Response with citation (should ALLOW)", "status": "running"})
+            st.session_state.active_gate = "U-O"
+            result = enforcer.pre_response(
+                "OCC requires all banks to maintain capital reserves of 8%.",
+                citations=[{"source": "OCC Bulletin 2023-01", "url": "https://occ.gov/..."}],
+                user_id=user_id
+            )
+            st.session_state.active_gate = None
+            results[-1]["status"] = "complete"
+            results[-1]["decision"] = result.decision.value
+            results[-1]["controls"] = result.controls_applied
+        
+        # Demo 6: Inter-agent communication (should DENY)
+        if start_from <= 6:
+            results.append({"test": "6. Testing A-O: Send to another agent (should DENY)", "status": "running"})
+            st.session_state.active_gate = "A-O"
+            result = enforcer.agent_outbound("research_agent", {"query": "find precedents"}, user_id)
+            st.session_state.active_gate = None
+            results[-1]["status"] = "complete"
+            results[-1]["decision"] = result.decision.value
+            results[-1]["reason"] = result.denial_reason
+        
+        # Demo 7: Memory write of allowed preference
+        if start_from <= 7:
+            results.append({"test": "7. Testing M-O: Store citation format (should ALLOW)", "status": "running"})
+            st.session_state.active_gate = "M-O"
+            result = enforcer.memory_write("citation_format", "APA 7th edition", user_id)
+            st.session_state.active_gate = None
+            results[-1]["status"] = "complete"
+            results[-1]["decision"] = result.decision.value
+            results[-1]["controls"] = result.controls_applied
+        
+        # Demo 8: Memory write of regulated data
+        if start_from <= 8:
+            results.append({"test": "8. Testing M-O: Store customer SSN (should DENY)", "status": "running"})
+            st.session_state.active_gate = "M-O"
+            result = enforcer.memory_write("customer_info", "SSN: 123-45-6789", user_id)
+            st.session_state.active_gate = None
+            results[-1]["status"] = "complete"
+            results[-1]["decision"] = result.decision.value
+            results[-1]["reason"] = result.denial_reason
+        
+        st.session_state.demo_results = results
+        return results
+    
     def render_dashboard(self):
         """Render the main demo dashboard."""
         st.header("Constitutional Ontology Enforcement Dashboard")
         st.markdown("---")
         
-        # Demo scenarios
-        st.markdown("### Demo Scenarios")
-        
-        scenarios = {
-            "Scenario 1: Allowed Tool Call": {
-                "user_input": "Read the Q4 policy draft",
-                "tool_calls": [
-                    {"tool": "sharepoint_read", "params": {"path": "/policies/draft/q4-policy.md"}}
-                ],
-                "generate_response": True,
-                "response_text": "Policy draft retrieved successfully.",
-                "citations": [],
-                "user_id": "analyst_123"
-            },
-            "Scenario 2: Tool Requiring Approval": {
-                "user_input": "Create a Jira task for policy review",
-                "tool_calls": [
-                    {"tool": "jira_create", "params": {"title": "Review Q4 policy", "description": "Please review draft"}}
-                ],
-                "generate_response": False,
-                "user_id": "analyst_123"
-            },
-            "Scenario 3: Denied Tool Call": {
-                "user_input": "Send email to external recipient",
-                "tool_calls": [
-                    {"tool": "email_send", "params": {"to": "external@other.com", "subject": "Policy"}}
-                ],
-                "generate_response": False,
-                "user_id": "analyst_123"
-            },
-            "Scenario 4: Full Workflow": {
-                "user_input": "Draft a Q4 compliance policy update under OCC supervision",
-                "tool_calls": [
-                    {"tool": "sharepoint_read", "params": {"path": "/policies/draft/q4-policy.md"}},
-                    {"tool": "occ_query", "params": {"query": "capital reserve requirements baseline"}},
-                    {"tool": "jira_create", "params": {"title": "Review Q4 policy", "description": "Please review draft"}}
-                ],
-                "generate_response": True,
-                "response_text": "OCC requires all banks to maintain capital reserves of 8%.",
-                "citations": [{"source_uri": "occ://guidance/2024-xyz", "doc_hash": "def456"}],
-                "user_id": "analyst_123"
-            }
-        }
-        
-        # Scenario selection and execution
-        selected_scenario = st.selectbox("Select a demo scenario:", list(scenarios.keys()))
+        # Run demo tests button
+        st.markdown("### Run Demo Tests")
+        st.caption("Run the demo tests from constitutional_enforcement_interactive.py with the selected policy")
         
         col1, col2 = st.columns([3, 1])
         with col1:
-            st.json(scenarios[selected_scenario])
+            st.info(f"**Current Policy:** {st.session_state.get('policy_file', 'N/A')}")
         with col2:
-            if st.button("▶️ Run Scenario", type="primary", use_container_width=True, 
-                        disabled=st.session_state.execution_in_progress):
-                self.run_demo_scenario(selected_scenario, scenarios[selected_scenario])
+            if st.button("▶️ Run Demo Tests", type="primary", use_container_width=True,
+                        disabled=st.session_state.get('execution_in_progress', False) or st.session_state.get('pending_approval') is not None):
+                st.session_state.execution_in_progress = True
+                st.session_state.demo_results = []
+                st.session_state.demo_results = self.run_demo_tests()
+                if not st.session_state.pending_approval:
+                    st.session_state.execution_in_progress = False
                 st.rerun()
         
         # Approval modal (rendered if needed)
@@ -1043,18 +1202,29 @@ class ConstitutionalEnforcementUI:
         st.markdown("---")
         self.render_gate_visualization(st.session_state.active_gate)
         
-        # Execution results
-        if st.session_state.execution_results:
+        # Demo test results
+        if st.session_state.get('demo_results'):
             st.markdown("---")
-            st.markdown("### Execution Results")
-            for result in st.session_state.execution_results:
+            st.markdown("### Demo Test Results")
+            for result in st.session_state.demo_results:
+                test_name = result.get("test", "Unknown test")
+                status = result.get("status", "unknown")
                 decision = result.get("decision", "N/A")
-                if decision == "DENY":
-                    st.error(f"**{result['step']}**: DENIED - {result.get('reason', 'N/A')}")
-                elif decision == "REQUIRE_APPROVAL":
-                    st.warning(f"**{result['step']}**: Requires Approval")
+                
+                if status == "waiting_approval":
+                    st.warning(f"**{test_name}** - ⏸️ Waiting for approval")
+                elif decision in ["allow", "allow_with_controls"]:
+                    st.success(f"**{test_name}** - ✅ {decision.upper()}")
+                    if result.get("controls"):
+                        st.caption(f"Controls: {', '.join(result['controls'])}")
+                elif decision == "deny":
+                    st.error(f"**{test_name}** - ❌ DENY")
+                    if result.get("reason"):
+                        st.caption(f"Reason: {result['reason']}")
+                elif decision == "require_approval":
+                    st.warning(f"**{test_name}** - ⚠️ REQUIRES APPROVAL")
                 else:
-                    st.success(f"**{result['step']}**: ALLOWED")
+                    st.info(f"**{test_name}** - {decision}")
         
         # Two-column layout: Audit Log and Export
         st.markdown("---")
