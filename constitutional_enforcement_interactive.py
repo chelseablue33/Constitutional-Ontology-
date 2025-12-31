@@ -8,6 +8,7 @@ at each of the 8 gates defined in the Constitutional Ontology.
 
 import json
 import os
+import argparse
 from datetime import datetime
 import uuid
 from typing import Any
@@ -499,9 +500,26 @@ class ConstitutionalEnforcer:
 # USAGE EXAMPLE
 # =============================================================================
 if __name__ == "__main__":
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(
+        description="Constitutional Enforcement Layer - 8-Gate Policy Interceptor Demo"
+    )
+    parser.add_argument(
+        "--policy",
+        type=str,
+        default="policy_bank_compliance_v1.json",
+        help="Path to policy JSON file (default: policy_bank_compliance_v1.json)"
+    )
+    args = parser.parse_args()
+    
     # Initialize enforcer with policy
-    policy_path = os.path.join(os.path.dirname(__file__), "policy_bank_compliance_v1.json")
+    policy_path = os.path.join(os.path.dirname(__file__), args.policy)
+    if not os.path.exists(policy_path):
+        print(f"Error: Policy file not found: {policy_path}")
+        exit(1)
+    
     enforcer = ConstitutionalEnforcer(policy_path)
+    print(f"Loaded policy: {args.policy}\n")
     
     print("=== Constitutional Enforcement Demo ===\n")
 

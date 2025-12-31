@@ -1,0 +1,323 @@
+{
+  "policy_id": "bank_compliance_drafting_agent_v2_restrictive",
+  "policy_version": "2.0.0-restrictive",
+  "created": "2024-12-20",
+  "description": "Highly restrictive configuration: minimal autonomy, strict controls, maximum security",
+  
+  "dials": {
+    "autonomy": {
+      "level": "L1",
+      "label": "act_only_with_approval",
+      "description": "Agent requires explicit approval for all consequential actions"
+    },
+    "tool_access": {
+      "level": "L1", 
+      "label": "read_only_with_approval",
+      "description": "Agent can only read; all writes require explicit approval"
+    },
+    "personalization": {
+      "level": "L2",
+      "label": "session_only",
+      "description": "Only session-scoped preferences; no persistent storage"
+    },
+    "memory": {
+      "level": "L2",
+      "label": "ephemeral_session_only",
+      "description": "Ephemeral session memory only; no persistent storage"
+    },
+    "inter_agent": {
+      "level": "L1",
+      "label": "none",
+      "description": "No inter-agent communication permitted"
+    }
+  },
+
+  "gates": {
+    "S-I": {
+      "name": "System Inbound",
+      "direction": "system_to_agent",
+      "allow": [
+        "receive_sharepoint_docs"
+      ],
+      "controls": [
+        {
+          "type": "provenance_required",
+          "params": {"capture": ["source_uri", "doc_hash", "retrieval_timestamp", "user_id", "session_id"]}
+        },
+        {"type": "malware_scan"},
+        {"type": "dlp_scan"},
+        {"type": "injection_scrub", "params": {"strip_hidden_instructions": true, "aggressive_mode": true}},
+        {"type": "content_filter", "params": {"block_macros": true, "block_executables": true}},
+        {"type": "log", "params": {"events": ["retrieval_event", "query", "scan_results"]}}
+      ],
+      "deny": [
+        "files_with_macros",
+        "files_with_executables", 
+        "sources_not_on_allowlist",
+        "external_sources",
+        "unencrypted_data",
+        "files_without_provenance"
+      ]
+    },
+
+    "S-O": {
+      "name": "System Outbound",
+      "direction": "agent_to_system",
+      "allow": [
+        {"action": "read", "target": "sharepoint", "controls": ["approval_hitl", "log"]},
+        {"action": "execute", "target": "jira_create_task", "controls": ["approval_hitl", "log"]}
+      ],
+      "controls": [
+        {"type": "least_privilege", "params": {"scope_to_tool_allowlist": true, "strict_mode": true}},
+        {"type": "sandbox", "params": {"apply_to": "all_operations", "isolated": true}},
+        {"type": "approval_hitl", "params": {"required_for_all": true}},
+        {"type": "log", "params": {"capture": ["tool_call", "params", "result", "user_id", "session_id", "approval_record"]}}
+      ],
+      "deny": [
+        "publish_external",
+        "write_to_final_approved_without_approval",
+        "write_to_draft_without_approval",
+        "execute_beyond_allowlist",
+        "execute_without_approval",
+        "read_external_sources",
+        "write_anywhere",
+        "execute_any_tool"
+      ]
+    },
+
+    "U-I": {
+      "name": "User Inbound", 
+      "direction": "user_to_agent",
+      "allow": [
+        "receive_instructions"
+      ],
+      "controls": [
+        {"type": "auth", "params": {"method": "sso", "session_binding": true, "mfa_required": true}},
+        {"type": "scope_lock", "params": {"bind_to": "working_doc_ids", "strict": true}},
+        {"type": "injection_detect", "params": {"scan_pasted_text": true, "aggressive_mode": true}},
+        {"type": "rate_limit", "params": {"max_requests_per_minute": 10}},
+        {"type": "log", "params": {"capture": ["user_id", "request_type", "timestamp", "input_hash", "session_id"]}}
+      ],
+      "deny": [
+        "request_export_external",
+        "request_include_customer_data",
+        "request_bulk_operations",
+        "request_automated_actions",
+        "request_without_auth",
+        "request_from_unverified_user"
+      ]
+    },
+
+    "U-O": {
+      "name": "User Outbound",
+      "direction": "agent_to_user", 
+      "allow": [
+        "present_drafts",
+        "ask_clarifying_questions"
+      ],
+      "controls": [
+        {"type": "provenance_required", "params": {"apply_to": "all_claims", "strict": true}},
+        {"type": "no_deception", "params": {"disclose_limitations": true, "disclose_uncertainty": true}},
+        {"type": "redaction", "params": {"strip": ["customer_data", "regulated_data", "pii", "phi", "account_numbers"]}},
+        {"type": "content_review", "params": {"require_human_review": true}},
+        {"type": "log", "params": {"capture": ["response", "citations", "redactions", "review_status"]}}
+      ],
+      "deny": [
+        "share_to_external_recipients",
+        "claims_without_citations",
+        "unredacted_sensitive_data",
+        "unreviewed_content",
+        "analytics_or_profiling"
+      ]
+    },
+
+    "M-I": {
+      "name": "Memory Inbound",
+      "direction": "memory_to_agent",
+      "allow": [
+        "retrieve_citation_format"
+      ],
+      "controls": [
+        {"type": "data_minimization", "params": {"strict": true}},
+        {"type": "acl", "params": {"scope": "per_user", "strict": true}},
+        {"type": "log", "params": {"capture": ["what_retrieved", "user_id", "timestamp"]}},
+        {"type": "versioning", "params": {"track_template_provenance": true}},
+        {"type": "session_only", "params": {"no_persistent_retrieval": true}}
+      ],
+      "deny": [
+        "retrieve_regulated_data",
+        "cross_user_memory_access",
+        "retrieve_persistent_data",
+        "retrieve_org_preferences",
+        "retrieve_shared_knowledge"
+      ]
+    },
+
+    "M-O": {
+      "name": "Memory Outbound",
+      "direction": "agent_to_memory",
+      "allow": [
+        "store_citation_format"
+      ],
+      "controls": [
+        {"type": "user_controls", "params": {"allow": ["view", "edit", "delete"], "session_only": true}},
+        {"type": "retention_policy", "params": {"max_days": 1, "review_required": true, "auto_delete": true}},
+        {"type": "encryption", "params": {"at_rest": true, "in_transit": true}},
+        {"type": "redaction", "params": {"apply_before_store": true, "aggressive": true}},
+        {"type": "log", "params": {"capture": ["key", "value_hash", "user_id", "timestamp"]}}
+      ],
+      "deny": [
+        "store_pii",
+        "store_phi", 
+        "store_customer_account_info",
+        "store_full_document_contents",
+        "store_persistent_data",
+        "store_org_knowledge",
+        "store_workflow_patterns",
+        "store_any_sensitive_data"
+      ]
+    },
+
+    "A-I": {
+      "name": "Agent Inbound",
+      "direction": "other_agent_to_agent",
+      "allow": [],
+      "controls": [],
+      "deny": ["*"],
+      "deny_reason": "Inter-agent communication disabled at L1"
+    },
+
+    "A-O": {
+      "name": "Agent Outbound", 
+      "direction": "agent_to_other_agent",
+      "allow": [],
+      "controls": [],
+      "deny": ["*"],
+      "deny_reason": "Inter-agent communication disabled at L1"
+    }
+  },
+
+  "overlays_enabled": ["OCC_MRM_v0", "EU_AIACT_HR_v0", "SOC2_Type2_v0"],
+
+  "overlays": {
+    "OCC_MRM_v0": {
+      "name": "OCC Model Risk Management",
+      "version": "0.1",
+      "constraints": [
+        {
+          "trigger": {"gate": "S-O", "action": "any"},
+          "add_controls": ["approval_hitl", "change_ticket_id_required", "risk_assessment"],
+          "evidence": ["approval_record", "ticket_id", "risk_score"]
+        },
+        {
+          "trigger": {"gate": "U-O", "content_type": "any"},
+          "add_controls": ["provenance_required", "human_review"],
+          "evidence": ["source_citation", "retrieval_timestamp", "reviewer_id"]
+        },
+        {
+          "trigger": {"gate": "S-I", "action": "retrieve"},
+          "add_controls": ["full_lineage_logging", "audit_trail"],
+          "evidence": ["source_id", "doc_hash", "timestamp", "query_id", "user_id"]
+        }
+      ]
+    },
+
+    "EU_AIACT_HR_v0": {
+      "name": "EU AI Act High-Risk",
+      "version": "0.1", 
+      "constraints": [
+        {
+          "trigger": {"gate": "U-O"},
+          "add_controls": ["instructions_for_use", "limitations_disclosure", "human_oversight"],
+          "evidence": ["disclosure_attached", "oversight_record"]
+        },
+        {
+          "trigger": {"gate": "S-I"},
+          "add_controls": ["lifecycle_logging", "data_provenance"],
+          "evidence": ["query", "sources", "verifier", "data_lineage"]
+        },
+        {
+          "trigger": {"gate": "S-O", "action": "any"},
+          "add_controls": ["draft_only", "watermark", "versioning", "approval_required"],
+          "evidence": ["version_id", "watermark_applied", "approval_id"]
+        }
+      ]
+    },
+
+    "SOC2_Type2_v0": {
+      "name": "SOC 2 Type 2 Compliance",
+      "version": "0.1",
+      "enabled": true,
+      "constraints": [
+        {
+          "trigger": {"gate": "S-O"},
+          "add_controls": ["access_control", "encryption", "audit_logging"],
+          "evidence": ["access_record", "encryption_key_id", "audit_log_id"]
+        },
+        {
+          "trigger": {"gate": "M-O"},
+          "add_controls": ["data_classification", "retention_enforcement"],
+          "evidence": ["classification_level", "retention_policy_id"]
+        }
+      ]
+    }
+  },
+
+  "constitutional_pillars": {
+    "dignity": {
+      "gates": ["U-O", "U-I", "M-O"],
+      "validation_rules": [
+        "If User + Regulated Data + Write/Share → require Consent + Redaction + Logging + Approval",
+        "No deception: must disclose agent identity and limitations explicitly",
+        "No hidden persuasion patterns",
+        "All user data requires explicit consent"
+      ]
+    },
+    "hope": {
+      "gates": ["S-I", "A-I", "M-I"],
+      "validation_rules": [
+        "If consequential claims → require ProvenanceRequired + Human Review",
+        "If uncertainty high → require Ask before confident output",
+        "Sources must be cited with full provenance",
+        "All claims require verification"
+      ]
+    },
+    "agency": {
+      "gates": ["S-O", "A-O"],
+      "validation_rules": [
+        "If Execute or Delegate → require Approval or HITL for ALL actions",
+        "Provide opt-out and override paths",
+        "User can revoke permissions at any time",
+        "All actions require explicit user consent"
+      ]
+    }
+  },
+
+  "enforcement_hooks": {
+    "pre_tool_call": {
+      "gate": "S-O",
+      "checks": ["least_privilege", "approval_hitl", "scope_validation", "allowlist_check", "risk_assessment"]
+    },
+    "post_tool_result": {
+      "gate": "S-I", 
+      "checks": ["provenance_required", "dlp_scan", "malware_scan", "injection_scrub", "content_filter"]
+    },
+    "pre_response": {
+      "gate": "U-O",
+      "checks": ["redaction", "provenance_required", "no_deception", "content_review", "log"]
+    },
+    "post_user_input": {
+      "gate": "U-I",
+      "checks": ["auth_validation", "scope_lock", "injection_detection", "rate_limit", "log"]
+    },
+    "memory_write": {
+      "gate": "M-O",
+      "checks": ["user_consent", "redaction", "retention_policy", "encryption", "session_only"]
+    },
+    "memory_read": {
+      "gate": "M-I",
+      "checks": ["per_user_acl", "data_minimization", "versioning_check", "session_only"]
+    }
+  }
+}
+
