@@ -176,6 +176,29 @@ def render_surface_activation(surfaces_touched: Dict[str, bool], trace_data: Dic
         [("A-I", "Agent"), ("A-O", "Agent")]
     ]
     
+    # Determine surface statuses from trace data if available
+    surface_statuses = {}
+    if trace_data:
+        gate_results = trace_data.get("pipeline_results", {}).get("gate_results", [])
+        # Check for escalated or denied gates that might affect surfaces
+        for gate_result in gate_results:
+            gate_status = gate_result.get("status", "")
+            gate_verdict = gate_result.get("verdict", "")
+            if gate_status == "escalated" or gate_verdict == "ESCALATE":
+                # Map gates to surfaces (simplified mapping)
+                gate_num = gate_result.get("gate_num", 0)
+                if gate_num <= 4:  # Pre-flight gates affect S-O, S-I
+                    if "S-O" not in surface_statuses:
+                        surface_statuses["S-O"] = "escalated"
+                    if "S-I" not in surface_statuses:
+                        surface_statuses["S-I"] = "escalated"
+            elif gate_status == "failed" or gate_verdict == "DENY":
+                if gate_num <= 4:
+                    if "S-O" not in surface_statuses:
+                        surface_statuses["S-O"] = "denied"
+                    if "S-I" not in surface_statuses:
+                        surface_statuses["S-I"] = "denied"
+    
     # Create grid
     for row in surface_grid:
         cols = st.columns(2)
@@ -184,36 +207,104 @@ def render_surface_activation(surfaces_touched: Dict[str, bool], trace_data: Dic
                 activated = surfaces_touched.get(surface_id, False)
                 info = surface_labels.get(surface_id, {})
                 
-                if activated:
+                # Determine status and icon
+                if surface_id in surface_statuses:
+                    status_type = surface_statuses[surface_id]
+                    if status_type == "escalated":
+                        icon = "⚠"
+                        color = "#ffc107"  # Amber
+                        status = "Escalated"
+                        bg_color = "#fff3cd"
+                    elif status_type == "denied":
+                        icon = "✗"
+                        color = "#dc3545"  # Red
+                        status = "Denied"
+                        bg_color = "#f8d7da"
+                    else:
+                        icon = "✓"
+                        color = "#28a745"  # Green
+                        status = "Activated"
+                        bg_color = "#d4edda"
+                elif activated:
                     icon = "✓"
-                    color = "#28a745"
+                    color = "#28a745"  # Green
                     status = "Activated"
+                    bg_color = "#d4edda"
                 else:
                     icon = "○"
-                    color = "#6c757d"
+                    color = "#6c757d"  # Gray
                     status = "Not touched"
+                    bg_color = "#f8f9fa"
                 
+                # Card container
                 st.markdown(f"""
                 <div style="
-                    background-color: {'#d4edda' if activated else '#f8f9fa'};
+                    background-color: {bg_color};
                     border: 2px solid {color};
                     border-radius: 8px;
                     padding: 15px;
                     text-align: center;
-                    margin-bottom: 10px;
+                    margin-bottom: 5px;
                 ">
-                    <div style="font-size: 24px; color: {color}; font-weight: bold;">{icon}</div>
-                    <div style="font-weight: bold; margin-top: 5px;">{surface_id}</div>
-                    <div style="font-size: 12px; color: #666; margin-top: 3px;">{info.get('label', surface_id)}</div>
-                    <div style="font-size: 10px; color: #888; margin-top: 5px;">{status}</div>
+                    <div style="font-size: 32px; color: {color}; font-weight: bold; margin-bottom: 8px;">{icon}</div>
+                    <div style="font-weight: bold; font-size: 16px; margin-bottom: 5px;">{surface_id}</div>
+                    <div style="font-size: 12px; color: #666; margin-bottom: 5px;">{info.get('label', surface_id)}</div>
+                    <div style="font-size: 10px; color: #888;">{status}</div>
                 </div>
                 """, unsafe_allow_html=True)
                 
-                # Show details if activated
-                if activated and trace_data:
-                    with st.expander(f"{surface_id} Details", expanded=False):
+                # Use expander for clickable details (acts as "click" handler for the card)
+                if trace_data:
+                    with st.expander(f"{surface_id} - Show details", expanded=False):
+                        # Determine which gates processed this surface
+                        gates_processed = []
+                        controls_applied = []
+                        
+                        gate_results = trace_data.get("pipeline_results", {}).get("gate_results", [])
+                        for gate_result in gate_results:
+                            gate_num = gate_result.get("gate_num", 0)
+                            gate_name = gate_result.get("gate_name", "")
+                            # Map gates to surfaces based on gate logic
+                            # This is simplified - in reality you'd have better mapping
+                            if surface_id == "U-I" and gate_num == 1:
+                                gates_processed.append(f"Gate {gate_num}: {gate_name}")
+                                controls_applied.extend(gate_result.get("signals", {}).keys())
+                            elif surface_id == "S-O" and gate_num in [5, 6]:
+                                gates_processed.append(f"Gate {gate_num}: {gate_name}")
+                                controls_applied.extend(gate_result.get("signals", {}).keys())
+                            elif surface_id == "S-I" and gate_num in [3, 7]:
+                                gates_processed.append(f"Gate {gate_num}: {gate_name}")
+                                controls_applied.extend(gate_result.get("signals", {}).keys())
+                            elif surface_id == "U-O" and gate_num == 6:
+                                gates_processed.append(f"Gate {gate_num}: {gate_name}")
+                                controls_applied.extend(gate_result.get("signals", {}).keys())
+                        
+                        st.markdown(f"#### {surface_id} Details")
                         st.write("**Description:**", info.get("desc", ""))
-                        # Could add more details about which gates processed this surface
+                        
+                        if gates_processed:
+                            st.write("**Gates that processed this surface:**")
+                            for gate in gates_processed:
+                                st.write(f"- {gate}")
+                        else:
+                            # If no specific gates found, show general info
+                            if activated:
+                                st.write("**Gates that processed this surface:**")
+                                st.write("*This surface was activated during request processing*")
+                            else:
+                                st.write("*No gates processed this surface*")
+                        
+                        if controls_applied:
+                            st.write("**Controls applied:**")
+                            unique_controls = list(set(controls_applied))
+                            for control in unique_controls:
+                                st.write(f"- {control}")
+                        elif activated:
+                            st.write("**Controls applied:**")
+                            st.write("*Standard controls applied*")
+                        else:
+                            st.write("*No controls applied*")
+                
 
 
 def render_approval_modal(approval_request: Dict[str, Any], trace_id: str):
