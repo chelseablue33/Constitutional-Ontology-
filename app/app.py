@@ -563,6 +563,54 @@ with tab4:
                     trace_manager = st.session_state.trace_manager
                     enforcer = st.session_state.enforcer
                     
+                    def make_json_serializable(obj, _visited=None):
+                        """Recursively convert objects to JSON-serializable types, handling circular references"""
+                        if _visited is None:
+                            _visited = set()
+                        
+                        # Handle basic JSON-serializable types
+                        if isinstance(obj, (str, int, float, bool, type(None))):
+                            return obj
+                        
+                        # Handle dict
+                        if isinstance(obj, dict):
+                            # Check for circular reference by object id
+                            obj_id = id(obj)
+                            if obj_id in _visited:
+                                return "<circular reference>"
+                            _visited.add(obj_id)
+                            try:
+                                result = {k: make_json_serializable(v, _visited) for k, v in obj.items()}
+                            finally:
+                                _visited.remove(obj_id)
+                            return result
+                        
+                        # Handle list
+                        if isinstance(obj, list):
+                            obj_id = id(obj)
+                            if obj_id in _visited:
+                                return "<circular reference>"
+                            _visited.add(obj_id)
+                            try:
+                                result = [make_json_serializable(item, _visited) for item in obj]
+                            finally:
+                                _visited.remove(obj_id)
+                            return result
+                        
+                        # Handle objects with __dict__
+                        if hasattr(obj, '__dict__'):
+                            obj_id = id(obj)
+                            if obj_id in _visited:
+                                return "<circular reference>"
+                            _visited.add(obj_id)
+                            try:
+                                return make_json_serializable(vars(obj), _visited)
+                            finally:
+                                _visited.remove(obj_id)
+                        
+                        # Fallback: convert to string
+                        return str(obj)
+                    
                     evidence_packet = {
                         "export_timestamp": datetime.utcnow().isoformat() + "Z",
                         "policy_version": enforcer.policy.get("policy_version", "N/A"),
@@ -573,20 +621,24 @@ with tab4:
                         trace = trace_manager.get_trace(export_trace_id)
                         if trace:
                             if include_full_trace:
-                                evidence_packet["trace"] = trace_manager.to_dict(trace)
+                                trace_dict = trace_manager.to_dict(trace)
+                                evidence_packet["trace"] = make_json_serializable(trace_dict)
                             if include_audit_log:
-                                evidence_packet["related_audit_entries"] = [
-                                    e for e in enforcer.get_audit_log()
+                                audit_entries = [
+                                    make_json_serializable(e) for e in enforcer.get_audit_log()
                                     if e.get("evidence", {}).get("trace_id") == export_trace_id
                                 ]
+                                evidence_packet["related_audit_entries"] = audit_entries
                         else:
                             st.error(f"Trace ID {export_trace_id} not found.")
                             st.stop()
                     else:
                         if include_full_trace:
-                            evidence_packet["all_traces"] = trace_manager.get_all_traces()
+                            all_traces = trace_manager.get_all_traces()
+                            evidence_packet["all_traces"] = make_json_serializable(all_traces)
                         if include_audit_log:
-                            evidence_packet["audit_log"] = enforcer.get_audit_log()
+                            audit_log = enforcer.get_audit_log()
+                            evidence_packet["audit_log"] = make_json_serializable(audit_log)
                     
                     if include_policy_version:
                         policy_str = json.dumps(enforcer.policy, sort_keys=True)
