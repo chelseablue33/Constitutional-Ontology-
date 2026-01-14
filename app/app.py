@@ -1,5 +1,5 @@
 """
-Constitutional Ontology Enforcement - Streamlit UI
+Governance Trust Layer - Streamlit UI
 Complete application with Pipeline Flow (8 gates) as primary view
 """
 
@@ -29,14 +29,13 @@ from ui_components import (
     render_enforcement_pipeline_enhanced,
     render_escalation_details,
     render_policy_diff,
-    render_surface_activation_compact,
-    render_approval_queue_compact
+    render_surface_activation_compact
 )
 
 
 # Page configuration
 st.set_page_config(
-    page_title="Constitutional Ontology Enforcement",
+    page_title="Governance Trust Layer",
     page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -279,8 +278,21 @@ def process_sandbox_request(user_prompt: str, user_id: str = "analyst_123"):
 
 # Sidebar
 with st.sidebar:
-    st.title("🛡️ Constitutional Ontology")
+    st.title("🛡️ Governance Trust Layer")
     load_policy_summary()
+    
+    st.sidebar.markdown("---")
+    
+    # Navigation to other pages
+    st.sidebar.markdown("### Navigation")
+    if st.sidebar.button("📄 Soft Ontology", use_container_width=True):
+        st.switch_page("pages/soft_ontology.py")
+    if st.sidebar.button("⚙️ Policy Editor", use_container_width=True):
+        st.switch_page("pages/policy_editor.py")
+    if st.sidebar.button("🚪 Gate Details", use_container_width=True):
+        st.switch_page("pages/gate_details.py")
+    if st.sidebar.button("✅ Approval Queue", use_container_width=True):
+        st.switch_page("pages/approval_queue.py")
     
     st.sidebar.markdown("---")
     st.sidebar.markdown("### Gate Legend")
@@ -405,12 +417,15 @@ with main_col1:
     if current_trace and trace_dict:
         render_enforcement_pipeline_enhanced(trace_dict)
     else:
-        st.markdown("### Enforcement Pipeline - gate runtime sequence")
+        st.markdown("### Enforcement Pipeline")
+        st.caption("Gate runtime sequence")
         st.info("Submit a request to see the enforcement pipeline flow.")
     
     st.markdown("---")
     
     # 2. Escalation Details
+    st.markdown("### ⚠️ Escalation Details")
+    
     if current_trace and trace_dict:
         approval_data = None
         if current_trace.verdict == "ESCALATE":
@@ -424,8 +439,15 @@ with main_col1:
                         approval_data = approval
                         break
         render_escalation_details(trace_dict, approval_data)
+    else:
+        st.info("No escalation details available. Submit a request that triggers escalation to see details here.")
+    
+    st.markdown("---")
     
     # 3. Policy Diff
+    st.markdown("### 📊 Policy Comparison")
+    st.caption("Baseline vs Custom policy differences")
+    
     # Load baseline and current policies for comparison
     baseline_policy = None
     current_policy = None
@@ -458,25 +480,25 @@ with main_col2:
         st.caption("Interaction points touched")
         st.info("Submit a request to see surface activation.")
     
-    st.markdown("---")
-    
-    # 2. Approval Queue
-    # Use mock approvals in simulate mode if no real approvals exist
-    if st.session_state.simulate_mode and not st.session_state.pending_approvals and mock_pending_approvals:
-        render_approval_queue_compact(mock_pending_approvals)
-    else:
-        render_approval_queue_compact(st.session_state.pending_approvals)
 
 st.markdown("---")
 
 # Key UI Elements section
-st.markdown("### Key UI Elements (P0 Requirements)")
-st.markdown("""
-1. Cognitive Onramp — Always visible strip with 8-surface grid + gate progress timeline
-2. Baseline vs Custom — Rule badges showing regulatory floor vs configurable
-3. Policy Diff — Summary card when switching policies
-4. Simulate/Enforce Toggle — Safe testing mode before deploying
-""")
+with st.container():
+    st.markdown("### 📋 Key UI Elements (P0 Requirements)")
+    col_req1, col_req2 = st.columns(2)
+    
+    with col_req1:
+        st.markdown("""
+        - **Cognitive Onramp** — Always visible strip with 8-surface grid + gate progress timeline
+        - **Baseline vs Custom** — Rule badges showing regulatory floor vs configurable
+        """)
+    
+    with col_req2:
+        st.markdown("""
+        - **Policy Diff** — Summary card when switching policies
+        - **Simulate/Enforce Toggle** — Safe testing mode before deploying
+        """)
 
 # Navigation tabs at bottom
 nav_tab1, nav_tab2, nav_tab3, nav_tab4 = st.tabs(["Pipeline Trace", "Approval Queue", "Audit Log", "Export"])
@@ -493,9 +515,17 @@ with nav_tab1:
             st.write(f"**Resolution:** {current_trace.resolution}")
 
 with nav_tab2:
-    # Show full approval queue
+    # Approval Queue tab - redirect to dedicated page
     st.header("Approval Queue")
-    st.caption("Pending human review")
+    st.caption("View and manage pending approval requests")
+    
+    st.info("💡 The Approval Queue has been moved to a dedicated page for better organization and functionality.")
+    
+    if st.button("Go to Approval Queue Page →", type="primary"):
+        st.switch_page("pages/approval_queue.py")
+    
+    st.markdown("---")
+    st.markdown("### Quick View")
     
     pending_approvals = st.session_state.pending_approvals
     
@@ -998,4 +1028,4 @@ with nav_tab4:
 
 # Footer
 st.markdown("---")
-st.caption("Constitutional Ontology Enforcement System v1.0")
+st.caption("Governance Trust Layer System v1.0")
