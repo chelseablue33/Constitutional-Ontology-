@@ -214,7 +214,8 @@ with col_save3:
         try:
             # Read raw file content first
             parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            policy_path = os.path.join(parent_dir, selected_policy)
+            policies_dir = os.path.join(parent_dir, "policies")
+            policy_path = os.path.join(policies_dir, selected_policy)
             
             with open(policy_path, 'r') as f:
                 file_content = f.read()
