@@ -118,12 +118,24 @@ st.markdown("### Save Changes")
 
 col_save1, col_save2, col_save3 = st.columns(3)
 
+def validate_json(content: str):
+    """Validate JSON content and return (is_valid, error_message, parsed_json)"""
+    try:
+        parsed_json = json.loads(content)
+        return True, "", parsed_json
+    except json.JSONDecodeError as e:
+        return False, f"Invalid JSON: {str(e)}", None
+    except Exception as e:
+        return False, f"JSON validation error: {str(e)}", None
+
 def save_policy_json():
     """Save the edited JSON to file with auto-formatting"""
+    # First validate JSON - must be valid before saving
+    is_valid, error_msg, parsed_json = validate_json(json_content)
+    if not is_valid:
+        return False, error_msg
+    
     try:
-        # Parse and validate JSON
-        parsed_json = json.loads(json_content)
-        
         # Re-format with proper indentation
         formatted_json = json.dumps(parsed_json, indent=2)
         
@@ -138,39 +150,46 @@ def save_policy_json():
         st.session_state.editor_json_content = formatted_json
         
         return True, formatted_json
-    except json.JSONDecodeError as e:
-        return False, f"Invalid JSON: {str(e)}"
     except Exception as e:
         return False, f"Failed to save policy: {str(e)}"
 
 with col_save1:
     if st.button("💾 Save to File", type="primary"):
-        success, result = save_policy_json()
-        if success:
-            st.success(f"Policy saved to {selected_policy}")
-            st.rerun()
+        # Validate JSON before attempting to save
+        is_valid, error_msg, _ = validate_json(json_content)
+        if not is_valid:
+            st.error(f"❌ Cannot save: {error_msg}")
+            st.caption("Please fix JSON syntax errors before saving.")
         else:
-            st.error(result)
+            success, result = save_policy_json()
+            if success:
+                st.success(f"Policy saved to {selected_policy}")
+                st.rerun()
+            else:
+                st.error(result)
 
 with col_save2:
     if st.button("📥 Export as JSON"):
-        try:
-            # Parse and format JSON for export
-            parsed_json = json.loads(json_content)
-            policy_json = json.dumps(parsed_json, indent=2)
-            policy_id = parsed_json.get("policy_id", "policy")
-            policy_version = parsed_json.get("policy_version", "v1")
-            
-            st.download_button(
-                label="Download Policy JSON",
-                data=policy_json,
-                file_name=f"policy_{policy_id}_{policy_version}.json",
-                mime="application/json"
-            )
-        except json.JSONDecodeError as e:
-            st.error(f"Invalid JSON: {str(e)}")
-        except Exception as e:
-            st.error(f"Failed to export: {str(e)}")
+        # Validate JSON before attempting to export
+        is_valid, error_msg, parsed_json = validate_json(json_content)
+        if not is_valid:
+            st.error(f"❌ Cannot export: {error_msg}")
+            st.caption("Please fix JSON syntax errors before exporting.")
+        else:
+            try:
+                # Format JSON for export
+                policy_json = json.dumps(parsed_json, indent=2)
+                policy_id = parsed_json.get("policy_id", "policy")
+                policy_version = parsed_json.get("policy_version", "v1")
+                
+                st.download_button(
+                    label="Download Policy JSON",
+                    data=policy_json,
+                    file_name=f"policy_{policy_id}_{policy_version}.json",
+                    mime="application/json"
+                )
+            except Exception as e:
+                st.error(f"Failed to export: {str(e)}")
 
 with col_save3:
     if st.button("🔄 Reset Changes"):
