@@ -67,34 +67,6 @@ def add_log(message: str, level: str = "info"):
     if len(st.session_state.soft_ontology_logs) > 50:
         st.session_state.soft_ontology_logs = st.session_state.soft_ontology_logs[-50:]
 
-# Logging Section at the top
-st.markdown("---")
-with st.expander("🔍 Debug Logging", expanded=False):
-    st.caption("View step-by-step operation logs for debugging")
-    
-    if st.button("Clear Logs", key="clear_logs"):
-        st.session_state.soft_ontology_logs = []
-        st.rerun()
-    
-    if st.session_state.soft_ontology_logs:
-        # Show logs in reverse order (newest first)
-        for log in reversed(st.session_state.soft_ontology_logs[-20:]):  # Show last 20
-            level = log.get("level", "info")
-            timestamp = log.get("timestamp", "")
-            message = log.get("message", "")
-            
-            if level == "success":
-                st.success(f"[{timestamp}] {message}")
-            elif level == "warning":
-                st.warning(f"[{timestamp}] {message}")
-            elif level == "error":
-                st.error(f"[{timestamp}] {message}")
-            else:
-                st.info(f"[{timestamp}] {message}")
-    else:
-        st.info("No logs yet. Operations will be logged here.")
-
-st.markdown("---")
 
 # ============================================================================
 # 1. INPUT TEXT SECTION
@@ -276,7 +248,8 @@ if st.session_state.text_analysis:
                 add_log("Starting policy generation from input text", "info")
                 # Get baseline policy path
                 parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-                baseline_path = os.path.join(parent_dir, "policy_bank_compliance_baseline.json")
+                policies_dir = os.path.join(parent_dir, "policies")
+                baseline_path = os.path.join(policies_dir, "policy_bank_compliance_baseline.json")
                 
                 if os.path.exists(baseline_path):
                     add_log(f"Using baseline policy template: {os.path.basename(baseline_path)}", "info")
@@ -377,4 +350,34 @@ if st.session_state.text_analysis:
                 st.error(f"Failed to prepare download: {str(e)}")
 else:
     st.info("Please analyze text first using the '🔍 Analyze Text Intent' button above to begin policy generation.")
+
+st.markdown("---")
+
+# ============================================================================
+# DEBUG LOGGING SECTION (at bottom)
+# ============================================================================
+with st.expander("🔍 Debug Logging", expanded=False):
+    st.caption("View step-by-step operation logs for debugging")
+    
+    if st.button("Clear Logs", key="clear_logs"):
+        st.session_state.soft_ontology_logs = []
+        st.rerun()
+    
+    if st.session_state.soft_ontology_logs:
+        # Show logs in reverse order (newest first)
+        for log in reversed(st.session_state.soft_ontology_logs[-20:]):  # Show last 20
+            level = log.get("level", "info")
+            timestamp = log.get("timestamp", "")
+            message = log.get("message", "")
+            
+            if level == "success":
+                st.success(f"[{timestamp}] {message}")
+            elif level == "warning":
+                st.warning(f"[{timestamp}] {message}")
+            elif level == "error":
+                st.error(f"[{timestamp}] {message}")
+            else:
+                st.info(f"[{timestamp}] {message}")
+    else:
+        st.info("No logs yet. Operations will be logged here.")
 

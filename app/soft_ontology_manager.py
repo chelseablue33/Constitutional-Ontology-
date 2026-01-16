@@ -987,17 +987,26 @@ Return ONLY valid JSON, no markdown formatting, no code blocks."""
             return None
     
     def save_generated_policy(self, document_id: str, policy_json: Dict[str, Any]) -> Optional[str]:
-        """Save generated policy to a JSON file and return the file path"""
+        """Save generated policy to a JSON file in the policies directory and return the file path"""
         import os
         
         policy_id = policy_json.get("policy_id", f"generated_policy_{document_id}")
-        parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        # Get project root directory
+        current_file = os.path.abspath(__file__)  # app/soft_ontology_manager.py
+        app_dir = os.path.dirname(current_file)   # app/
+        root_dir = os.path.dirname(app_dir)       # project root
+        
+        # Use policies directory
+        policies_dir = os.path.join(root_dir, "policies")
         policy_filename = f"{policy_id}.json"
-        policy_path = os.path.join(parent_dir, policy_filename)
+        policy_path = os.path.join(policies_dir, policy_filename)
         
         try:
-            with open(policy_path, 'w') as f:
-                json.dump(policy_json, f, indent=2)
+            # Ensure the policies directory exists
+            os.makedirs(policies_dir, exist_ok=True)
+            
+            with open(policy_path, 'w', encoding='utf-8') as f:
+                json.dump(policy_json, f, indent=2, ensure_ascii=False)
             
             # Store the file path
             self.generated_policies[document_id] = policy_path
@@ -1006,7 +1015,7 @@ Return ONLY valid JSON, no markdown formatting, no code blocks."""
             return None
     
     def save_generated_policy_from_text(self, text_key: str, policy_json: Dict[str, Any]) -> Optional[str]:
-        """Save generated policy from text to a JSON file in the project root directory and return the file path"""
+        """Save generated policy from text to a JSON file in the policies directory and return the file path"""
         import os
         
         policy_id = policy_json.get("policy_id", f"generated_policy_{text_key}")
@@ -1015,12 +1024,14 @@ Return ONLY valid JSON, no markdown formatting, no code blocks."""
         app_dir = os.path.dirname(current_file)   # app/
         root_dir = os.path.dirname(app_dir)       # project root
         
+        # Use policies directory
+        policies_dir = os.path.join(root_dir, "policies")
         policy_filename = f"{policy_id}.json"
-        policy_path = os.path.join(root_dir, policy_filename)
+        policy_path = os.path.join(policies_dir, policy_filename)
         
         try:
-            # Ensure the directory exists
-            os.makedirs(root_dir, exist_ok=True)
+            # Ensure the policies directory exists
+            os.makedirs(policies_dir, exist_ok=True)
             
             # Save the policy JSON file
             with open(policy_path, 'w', encoding='utf-8') as f:

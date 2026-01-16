@@ -71,20 +71,22 @@ if "request_submitted_successfully" not in st.session_state:
 
 
 def get_policy_files():
-    """Get all JSON policy files from root directory"""
+    """Get all JSON policy files from policies directory"""
     parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    policies_dir = os.path.join(parent_dir, "policies")
     policy_files = []
-    if os.path.exists(parent_dir):
-        for file in os.listdir(parent_dir):
-            if file.endswith('.json') and os.path.isfile(os.path.join(parent_dir, file)):
+    if os.path.exists(policies_dir):
+        for file in os.listdir(policies_dir):
+            if file.endswith('.json') and os.path.isfile(os.path.join(policies_dir, file)):
                 policy_files.append(file)
     return sorted(policy_files)
 
 
 def load_policy_json(policy_filename: str) -> Optional[Dict[str, Any]]:
-    """Load a policy file as JSON dictionary"""
+    """Load a policy file as JSON dictionary from policies directory"""
     parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    policy_path = os.path.join(parent_dir, policy_filename)
+    policies_dir = os.path.join(parent_dir, "policies")
+    policy_path = os.path.join(policies_dir, policy_filename)
     try:
         with open(policy_path, 'r') as f:
             return json.load(f)
@@ -93,9 +95,10 @@ def load_policy_json(policy_filename: str) -> Optional[Dict[str, Any]]:
 
 
 def load_policy_file(policy_filename: str):
-    """Load a policy file and create enforcer"""
+    """Load a policy file and create enforcer from policies directory"""
     parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    policy_path = os.path.join(parent_dir, policy_filename)
+    policies_dir = os.path.join(parent_dir, "policies")
+    policy_path = os.path.join(policies_dir, policy_filename)
     try:
         return ConstitutionalEnforcer(policy_path)
     except Exception as e:
@@ -110,7 +113,7 @@ def load_policy_summary():
     policy_files = get_policy_files()
     
     if not policy_files:
-        st.sidebar.error("No policy JSON files found in root directory")
+        st.sidebar.error("No policy JSON files found in policies directory")
         return
     
     # Get current selection or default to first file
