@@ -393,6 +393,18 @@ def render_cognitive_onramp(surfaces_touched: Dict[str, bool], gate_results: Lis
     st.markdown("### Cognitive Onramp")
     st.caption("Every AI request passes through 8 checkpoints across 4 surfaces.")
     
+    # Surface label mapping for full names
+    surface_labels = {
+        "U-I": "User Inbound",
+        "U-O": "User Outbound",
+        "S-I": "System Inbound",
+        "S-O": "System Outbound",
+        "M-I": "Memory Inbound",
+        "M-O": "Memory Outbound",
+        "A-I": "Agent Inbound",
+        "A-O": "Agent Outbound"
+    }
+    
     # Line 1: 8-surface grid in a single horizontal row (full width)
     # Green background: U-I, U-O, S-O; Gray background: all others
     surface_order = ["U-I", "U-O", "S-I", "S-O", "M-I", "M-O", "A-I", "A-O"]
@@ -400,13 +412,14 @@ def render_cognitive_onramp(surfaces_touched: Dict[str, bool], gate_results: Lis
     surface_cols = st.columns(8)
     for i, surface_id in enumerate(surface_order):
         with surface_cols[i]:
+            full_label = surface_labels.get(surface_id, surface_id)
             if surface_id in green_surfaces:
                 # Green background with white text
-                st.success(f"**{surface_id}**")
+                st.success(f"**{full_label}**")
             else:
                 # Gray background - using st.info for colored background (closest to gray in Streamlit)
                 # Note: st.info gives blue background, but it's the closest we can get without CSS
-                st.info(f"**{surface_id}**")
+                st.info(f"**{full_label}**")
     
     # Line 2: Gate Progress (left) and Legend (right) with space between
     progress_col, spacer_col, legend_col = st.columns([4, 1, 2])
@@ -578,8 +591,10 @@ def render_escalation_details(trace_data: Dict[str, Any], approval_data: Optiona
         st.write(f"**Policy Reference:** {policy_ref}")
         
         if st.button("Open Approval Queue →", type="primary", key="open_approval_queue"):
-            st.session_state["nav_tab"] = "Approval Queue"
-            st.rerun()
+            # Set the trace_id in session state if available for direct review
+            if approval_data:
+                st.session_state["review_trace_id"] = approval_data.get("trace_id")
+            st.switch_page("pages/approval_queue.py")
 
 
 def compare_policies(baseline_policy: Dict[str, Any], current_policy: Dict[str, Any]) -> Dict[str, Any]:
@@ -815,6 +830,15 @@ def render_surface_activation_compact(surfaces_touched: Dict[str, bool], trace_d
         [("A-I", "Agent"), ("A-O", "Agent")]
     ]
     
+    # Add column headers: Label | Inbound | Outbound
+    header_cols = st.columns([1, 1, 1])
+    with header_cols[0]:
+        st.write("")  # Empty space for alignment
+    with header_cols[1]:
+        st.markdown("**Inbound**")
+    with header_cols[2]:
+        st.markdown("**Outbound**")
+    
     # Create grid with row labels: Label | Surface 1 | Surface 2
     for row in surface_grid:
         cols = st.columns([1, 1, 1])
@@ -824,14 +848,15 @@ def render_surface_activation_compact(surfaces_touched: Dict[str, bool], trace_d
         with cols[0]:
             st.write(surface_type)
         
-        # Columns 2-3: Surface buttons
+        # Columns 2-3: Surface buttons with full labels
         for idx, (surface_id, _) in enumerate(row):
             with cols[idx + 1]:
                 activated = surfaces_touched.get(surface_id, False)
+                full_label = surface_labels.get(surface_id, surface_id)
                 if activated:
-                    st.success(f"**{surface_id}**")
+                    st.success(f"**{full_label}**")
                 else:
-                    st.info(f"**{surface_id}**")
+                    st.info(f"**{full_label}**")
 
 
 def render_approval_queue_compact(pending_approvals: List[Dict[str, Any]]):
@@ -849,9 +874,9 @@ def render_approval_queue_compact(pending_approvals: List[Dict[str, Any]]):
             st.write(f"`{trace_id}`")
             st.warning("ESCALATE")
             if st.button("Review", key=f"compact_review_{idx}"):
-                st.session_state[f"reviewing_{idx}"] = True
-                st.session_state["nav_tab"] = "Approval Queue"
-                st.rerun()
+                # Navigate to approval queue page with trace_id
+                st.session_state["review_trace_id"] = trace_id
+                st.switch_page("pages/approval_queue.py")
             if idx < len(pending_approvals) - 1:
                 st.markdown("---")
 
