@@ -290,22 +290,40 @@ if st.session_state.text_analysis:
                     gates_count = len(policy_json.get("gates", {}))
                     add_log(f"Policy JSON generated - ID: {policy_id}, Rules: {rules_count}, Gates: {gates_count}", "success")
                     
-                    # Save the policy
+                    # Policy is automatically saved during generation
+                    # Get the saved path from the policy_json or from manager
                     if st.session_state.text_key:
-                        policy_path = manager.save_generated_policy_from_text(st.session_state.text_key, policy_json)
+                        policy_path = manager.generated_policies.get(st.session_state.text_key)
                     else:
                         # Fallback: use policy_id as key
-                        policy_path = manager.save_generated_policy_from_text(policy_id, policy_json)
+                        policy_path = manager.generated_policies.get(policy_id)
                     
-                    if policy_path:
-                        add_log(f"Policy saved to file: {os.path.basename(policy_path)}", "success")
-                        st.success("Policy generated successfully!")
+                    # Also check if path was stored in policy_json
+                    if not policy_path:
+                        policy_path = policy_json.get("_saved_path")
+                    
+                    if policy_path and os.path.exists(policy_path):
+                        add_log(f"Policy automatically saved to file: {os.path.basename(policy_path)}", "success")
+                        st.success(f"✅ Policy generated and saved successfully: `{os.path.basename(policy_path)}`")
                         st.session_state.generated_policy_path = policy_path
                         st.session_state.generated_policy_filename = os.path.basename(policy_path)
                         st.rerun()
                     else:
-                        add_log("Failed to save policy to file. Check file permissions.", "error")
-                        st.error("Failed to save generated policy. Please check file permissions.")
+                        # Try to save manually as fallback
+                        if st.session_state.text_key:
+                            policy_path = manager.save_generated_policy_from_text(st.session_state.text_key, policy_json)
+                        else:
+                            policy_path = manager.save_generated_policy_from_text(policy_id, policy_json)
+                        
+                        if policy_path:
+                            add_log(f"Policy saved to file: {os.path.basename(policy_path)}", "success")
+                            st.success(f"✅ Policy generated and saved successfully: `{os.path.basename(policy_path)}`")
+                            st.session_state.generated_policy_path = policy_path
+                            st.session_state.generated_policy_filename = os.path.basename(policy_path)
+                            st.rerun()
+                        else:
+                            add_log("Failed to save policy to file. Check file permissions.", "error")
+                            st.error("Policy generated but failed to save. Please check file permissions.")
                 else:
                     add_log("Policy generation failed - No policy JSON returned. Check OpenAI API key.", "error")
                     st.error("Failed to generate policy. Please check OpenAI API key and try again.")

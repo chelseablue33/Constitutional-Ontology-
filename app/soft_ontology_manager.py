@@ -973,6 +973,12 @@ Return ONLY valid JSON, no markdown formatting, no code blocks."""
             if "overlays" not in policy_json:
                 policy_json["overlays"] = {}
             
+            # Automatically save the policy to the project folder
+            saved_path = self.save_generated_policy_from_text(text_key, policy_json)
+            if saved_path:
+                # Store the saved path in the policy_json for reference
+                policy_json["_saved_path"] = saved_path
+            
             return policy_json
             
         except json.JSONDecodeError as e:
