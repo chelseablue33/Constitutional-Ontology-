@@ -5,6 +5,7 @@ Soft Ontology Page - Create and manage organization-specific documentation integ
 import streamlit as st
 import os
 import sys
+import json
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 
@@ -28,269 +29,371 @@ if "soft_ontology_manager" not in st.session_state:
 manager = st.session_state.soft_ontology_manager
 
 st.title("📄 Soft Ontology Management")
-st.caption("Upload organization-specific documents (SOPs, marketing docs) to supplement hard ontology baseline")
+st.caption("Input organizational policy text to generate governance policies")
+
+# Initialize logging session state
+if "soft_ontology_logs" not in st.session_state:
+    st.session_state.soft_ontology_logs = []
+
+# Initialize session state for text input
+if "input_text" not in st.session_state:
+    st.session_state.input_text = ""
+
+if "text_analysis" not in st.session_state:
+    st.session_state.text_analysis = None
+
+if "generated_policy_path" not in st.session_state:
+    st.session_state.generated_policy_path = None
+
+if "text_key" not in st.session_state:
+    st.session_state.text_key = None
+
+def add_log(message: str, level: str = "info"):
+    """Add a log entry to the logging section"""
+    timestamp = datetime.utcnow().strftime("%H:%M:%S")
+    log_entry = {
+        "timestamp": timestamp,
+        "level": level,  # info, success, warning, error
+        "message": message
+    }
+    st.session_state.soft_ontology_logs.append(log_entry)
+    # Keep only last 50 log entries
+    if len(st.session_state.soft_ontology_logs) > 50:
+        st.session_state.soft_ontology_logs = st.session_state.soft_ontology_logs[-50:]
+
+# Logging Section at the top
+st.markdown("---")
+with st.expander("🔍 Debug Logging", expanded=False):
+    st.caption("View step-by-step operation logs for debugging")
+    
+    if st.button("Clear Logs", key="clear_logs"):
+        st.session_state.soft_ontology_logs = []
+        st.rerun()
+    
+    if st.session_state.soft_ontology_logs:
+        # Show logs in reverse order (newest first)
+        for log in reversed(st.session_state.soft_ontology_logs[-20:]):  # Show last 20
+            level = log.get("level", "info")
+            timestamp = log.get("timestamp", "")
+            message = log.get("message", "")
+            
+            if level == "success":
+                st.success(f"[{timestamp}] {message}")
+            elif level == "warning":
+                st.warning(f"[{timestamp}] {message}")
+            elif level == "error":
+                st.error(f"[{timestamp}] {message}")
+            else:
+                st.info(f"[{timestamp}] {message}")
+    else:
+        st.info("No logs yet. Operations will be logged here.")
 
 st.markdown("---")
 
-# Main content in two columns
-col1, col2 = st.columns([1, 1])
+# ============================================================================
+# 1. INPUT TEXT SECTION
+# ============================================================================
+st.markdown("### Input Text")
+st.caption("Enter or paste organizational policy text to analyze and generate policies")
 
-with col1:
-    st.markdown("### Upload Documents")
-    st.caption("Upload PDF, DOCX, TXT, or Markdown files containing organizational policies")
+input_text = st.text_area(
+    "Policy Text Input",
+    value=st.session_state.input_text,
+    height=300,
+    help="Enter the text content of your organizational policy, SOP, or compliance document",
+    key="policy_text_input"
+)
+
+if input_text:
+    st.session_state.input_text = input_text
+    # Generate a key for this text
+    st.session_state.text_key = f"text_{hash(input_text[:100])}"
+else:
+    st.session_state.input_text = ""
+    st.session_state.text_key = None
+
+st.markdown("---")
+
+# ============================================================================
+# 2. POLICY GENERATION WORKFLOW SECTION
+# ============================================================================
+st.markdown("### Policy Generation Workflow")
+st.caption("Analyze text and generate governance policies")
+
+if st.session_state.input_text and st.session_state.input_text.strip():
+    col_analyze, col_generate = st.columns(2)
     
-    uploaded_file = st.file_uploader(
-        "Choose a file",
-        type=["pdf", "docx", "txt", "md"],
-        help="Upload documents containing organizational policies, SOPs, or compliance requirements"
-    )
-    
-    if uploaded_file is not None:
-        # Read file content
-        file_content = uploaded_file.read()
-        file_type = uploaded_file.type
-        file_name = uploaded_file.name
-        
-        if st.button("Add Document", type="primary"):
-            document = manager.add_document(file_name, file_content, file_type)
-            st.success(f"Document '{file_name}' uploaded successfully!")
-            st.rerun()
-    
-    st.markdown("---")
-    
-    # Document list
-    st.markdown("### Uploaded Documents")
-    
-    if not manager.documents:
-        st.info("No documents uploaded yet. Upload a document to get started.")
-    else:
-        for doc in manager.documents:
-            with st.container():
-                col_doc1, col_doc2, col_doc3 = st.columns([3, 1, 1])
-                
-                with col_doc1:
-                    st.write(f"**{doc['name']}**")
-                    st.caption(f"Uploaded: {doc['upload_date'][:10]} | Size: {doc['size']:,} bytes | Status: {doc['status']}")
-                
-                with col_doc2:
-                    if st.button("Extract Text", key=f"extract_{doc['id']}"):
-                        extracted = manager.extract_text(doc['id'])
-                        if extracted:
-                            st.success("Text extracted!")
+    with col_analyze:
+        # Add a test button to verify API key
+        if st.button("🔍 Analyze Text Intent", type="primary", use_container_width=True):
+            with st.spinner("Analyzing text with LLM..."):
+                try:
+                    add_log("Starting LLM analysis for input text", "info")
+                    
+                    # First, test if we can get the client
+                    test_client = manager._get_openai_client()
+                    if not test_client:
+                        error_msg = getattr(manager, '_last_api_key_error', None) or "OpenAI API key not found"
+                        add_log(f"API key check failed - {error_msg}", "error")
+                        st.error(f"❌ API Key Issue: {error_msg}")
+                        
+                        # Show detailed diagnostics
+                        with st.expander("🔧 API Key Diagnostics", expanded=True):
+                            st.markdown("**Checking API key sources:**")
+                            
+                            # Check secrets
+                            try:
+                                if hasattr(st, 'secrets') and st.secrets:
+                                    if "openai" in st.secrets:
+                                        openai_sec = st.secrets["openai"]
+                                        if isinstance(openai_sec, dict) and "api_key" in openai_sec:
+                                            key_val = openai_sec["api_key"]
+                                            key_len = len(key_val) if key_val else 0
+                                            key_preview = key_val[:10] + "..." if key_val and len(key_val) > 10 else key_val
+                                            st.success(f"✓ Found [openai].api_key (length: {key_len}, starts with: {key_preview})")
+                                        else:
+                                            st.warning("✗ [openai].api_key not found in secrets")
+                                    else:
+                                        st.warning("✗ [openai] section not found in secrets")
+                                    
+                                    if "OPENAI_API_KEY" in st.secrets:
+                                        key_val = st.secrets["OPENAI_API_KEY"]
+                                        key_len = len(key_val) if key_val else 0
+                                        st.success(f"✓ Found OPENAI_API_KEY (length: {key_len})")
+                                    else:
+                                        st.info("ℹ OPENAI_API_KEY not found in secrets (this is OK if using [openai].api_key)")
+                                else:
+                                    st.error("✗ st.secrets is not available")
+                            except Exception as e:
+                                st.error(f"✗ Error checking secrets: {str(e)}")
+                            
+                            # Check environment
+                            import os
+                            env_key = os.environ.get("OPENAI_API_KEY")
+                            if env_key:
+                                st.success(f"✓ Found OPENAI_API_KEY in environment (length: {len(env_key)})")
+                            else:
+                                st.info("ℹ OPENAI_API_KEY not in environment (this is OK if using secrets)")
+                            
+                            st.markdown("---")
+                            st.markdown("""
+                            **To fix:**
+                            1. Ensure `.streamlit/secrets.toml` exists in your project root
+                            2. Add your API key:
+                            ```toml
+                            [openai]
+                            api_key = "sk-your-actual-key-here"
+                            ```
+                            3. Restart the Streamlit app (secrets are loaded at startup)
+                            """)
+                    else:
+                        # Client exists, proceed with analysis
+                        analysis, error_msg = manager.analyze_text_intent(st.session_state.input_text, "Input Text")
+                        if analysis:
+                            intent = analysis.get("intent", "N/A")
+                            policy_type = analysis.get("policy_type", "other")
+                            risk_level = analysis.get("risk_level", "medium")
+                            add_log(f"Analysis complete - Intent: {intent[:100]}... | Type: {policy_type} | Risk: {risk_level}", "success")
+                            st.session_state.text_analysis = analysis
+                            st.success("Text analyzed successfully!")
                             st.rerun()
                         else:
-                            st.error("Failed to extract text")
-                
-                with col_doc3:
-                    if st.button("Remove", key=f"remove_{doc['id']}"):
-                        manager.remove_document(doc['id'])
-                        st.success("Document removed")
-                        st.rerun()
-                
-                # Show extracted text preview
-                if doc.get("extracted_text"):
-                    with st.expander(f"Preview: {doc['name']}", expanded=False):
-                        text_preview = doc['extracted_text'][:500]  # First 500 chars
-                        st.text_area("Extracted Text", text_preview, height=150, disabled=True, key=f"preview_{doc['id']}")
-                        if len(doc['extracted_text']) > 500:
-                            st.caption(f"... ({len(doc['extracted_text']) - 500} more characters)")
-                
-                st.markdown("---")
-
-with col2:
-    st.markdown("### Extracted Rules")
-    st.caption("Policy-relevant information extracted from documents")
+                            error_message = error_msg or "No results returned. Check OpenAI API key."
+                            add_log(f"Analysis failed - {error_message}", "error")
+                            st.error(f"Failed to analyze text: {error_message}")
+                            if "API key" in error_message:
+                                st.info("""
+                                **To configure OpenAI API key:**
+                                1. Create or edit `.streamlit/secrets.toml` file in your project root
+                                2. Add your API key:
+                                ```toml
+                                [openai]
+                                api_key = "sk-your-actual-key-here"
+                                ```
+                                3. Restart the Streamlit app
+                                """)
+                except Exception as e:
+                    add_log(f"Error during analysis: {str(e)}", "error")
+                    st.error(f"Error during analysis: {str(e)}")
+                    st.info("Please ensure OpenAI API key is configured correctly in `.streamlit/secrets.toml`")
     
-    # OpenAI API key status - improved detection
-    api_key = None
-    use_openai = True  # Default to OpenAI (heavily prioritize)
-    
-    try:
-        # Try multiple methods to get API key
-        if hasattr(st, 'secrets') and st.secrets:
-            # Method 1: [openai].api_key
-            try:
-                if "openai" in st.secrets:
-                    api_key = st.secrets["openai"].get("api_key")
-            except (KeyError, AttributeError, TypeError):
-                pass
-            
-            # Method 2: Top-level OPENAI_API_KEY
-            if not api_key:
-                try:
-                    api_key = st.secrets.get("OPENAI_API_KEY")
-                except (KeyError, AttributeError, TypeError):
-                    pass
-    except Exception:
-        pass
-    
-    # Check environment variable as fallback
-    if not api_key:
-        import os
-        api_key = os.environ.get("OPENAI_API_KEY")
-    
-    # Validate API key
-    if api_key and not (api_key.startswith("sk-your-") or (api_key.startswith("sk-proj-") and len(api_key) < 50)):
-        st.success("✓ OpenAI API key configured - Using GPT-4o for intelligent extraction")
-        use_openai = st.checkbox("Use OpenAI for rule extraction", value=True, help="Uses GPT-4o for intelligent rule extraction. Uncheck to use simple keyword matching.", key="use_openai_checkbox")
-    else:
-        st.warning("⚠ OpenAI API key not found. Will use keyword-based extraction.")
-        st.info("""
-        **To enable OpenAI extraction:**
-        1. Create `.streamlit/secrets.toml` file
-        2. Add your API key:
-        ```toml
-        [openai]
-        api_key = "sk-your-actual-key-here"
-        ```
-        3. Restart the Streamlit app
-        """)
-        use_openai = st.checkbox("Use OpenAI for rule extraction", value=False, help="OpenAI API key not configured. Will use keyword matching.", key="use_openai_checkbox")
-    
-    # Extract rules from all documents
-    if st.button("Parse All Documents for Rules", type="primary"):
-        if not manager.documents:
-            st.warning("No documents uploaded. Please upload and extract text from documents first.")
-        else:
-            docs_with_text = [doc for doc in manager.documents if doc.get("extracted_text")]
-            if not docs_with_text:
-                st.warning("No documents have extracted text. Please extract text from documents first.")
-            else:
-                method_name = "OpenAI GPT-4o" if use_openai else "keyword matching"
-                with st.spinner(f"Parsing {len(docs_with_text)} document(s) using {method_name}..."):
-                    total_rules = 0
-                    errors = []
-                    openai_failures = []
-                    
-                    for doc in docs_with_text:
-                        try:
-                            rules = manager.parse_policy_rules(doc['id'], use_openai=use_openai)
-                            rule_count = len(rules)
-                            total_rules += rule_count
-                            
-                            if use_openai and rule_count == 0:
-                                # OpenAI was requested but returned no rules - might have failed
-                                openai_failures.append(doc['name'])
-                        except Exception as e:
-                            error_msg = f"Error parsing {doc['name']}: {str(e)}"
-                            errors.append(error_msg)
-                            st.error(error_msg)
-                    
-                    # Show results
-                    if errors:
-                        st.error(f"**Errors occurred:** {len(errors)} document(s) had errors")
-                        for error in errors:
-                            st.error(f"  • {error}")
-                    
-                    if openai_failures and use_openai:
-                        st.warning(f"**OpenAI returned no rules for:** {len(openai_failures)} document(s)")
-                        st.info("This might indicate: API key issues, rate limits, or documents without policy content. Falling back to keyword matching for these documents.")
-                    
-                    if total_rules > 0:
-                        st.success(f"✅ Extracted **{total_rules} policy rule(s)** using {method_name}!")
-                        st.rerun()
-                    else:
-                        if use_openai:
-                            st.warning("OpenAI extraction returned no rules. This could mean:")
-                            st.info("""
-                            - Documents don't contain policy-related content
-                            - API key is invalid or expired
-                            - Rate limit reached
-                            - Network/API error
-                            
-                            Try unchecking 'Use OpenAI' to use keyword-based extraction as a fallback.
-                            """)
+    with col_generate:
+        if st.session_state.text_analysis:
+            if st.button("⚙️ Generate Policy", type="primary", use_container_width=True):
+                with st.spinner("Generating policy with LLM (this may take a minute)..."):
+                    try:
+                        add_log("Starting policy generation from input text", "info")
+                        # Get baseline policy path
+                        parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                        baseline_path = os.path.join(parent_dir, "policy_bank_compliance_baseline.json")
+                        
+                        if os.path.exists(baseline_path):
+                            add_log(f"Using baseline policy template: {os.path.basename(baseline_path)}", "info")
                         else:
-                            st.info("No policy rules found using keyword matching. Try enabling OpenAI extraction for better results, or ensure documents contain policy-related keywords like 'retention', 'policy', 'compliance', etc.")
+                            add_log(f"Baseline policy not found at {baseline_path}, generating without template", "warning")
+                        
+                        policy_json = manager.generate_policy_from_text(st.session_state.input_text, baseline_path, "Input Text")
+                        if policy_json:
+                            policy_id = policy_json.get("policy_id", "unknown")
+                            rules_count = len(policy_json.get("rules", []))
+                            gates_count = len(policy_json.get("gates", {}))
+                            add_log(f"Policy JSON generated - ID: {policy_id}, Rules: {rules_count}, Gates: {gates_count}", "success")
+                            
+                            # Save the policy
+                            if st.session_state.text_key:
+                                policy_path = manager.save_generated_policy_from_text(st.session_state.text_key, policy_json)
+                            else:
+                                # Fallback: use policy_id as key
+                                policy_path = manager.save_generated_policy_from_text(policy_id, policy_json)
+                            
+                            if policy_path:
+                                add_log(f"Policy saved to file: {os.path.basename(policy_path)}", "success")
+                                st.success("Policy generated successfully!")
+                                st.session_state.generated_policy_path = policy_path
+                                st.session_state.generated_policy_filename = os.path.basename(policy_path)
+                                st.rerun()
+                            else:
+                                add_log("Failed to save policy to file. Check file permissions.", "error")
+                                st.error("Failed to save generated policy. Please check file permissions.")
+                        else:
+                            add_log("Policy generation failed - No policy JSON returned. Check OpenAI API key.", "error")
+                            st.error("Failed to generate policy. Please check OpenAI API key and try again.")
+                            st.info("This could be due to: invalid API key, rate limits, or network issues.")
+                    except Exception as e:
+                        add_log(f"Error during policy generation: {str(e)}", "error")
+                        st.error(f"Error during policy generation: {str(e)}")
+                        st.info("Please ensure OpenAI API key is configured correctly in `.streamlit/secrets.toml`")
+        else:
+            st.button("⚙️ Generate Policy", disabled=True, use_container_width=True, help="Please analyze text first")
     
-    if manager.extracted_rules:
-        st.write(f"**{len(manager.extracted_rules)} rule(s) extracted**")
+    # Show analysis results if available
+    if st.session_state.text_analysis:
+        st.markdown("#### Text Analysis Results")
+        with st.expander("View Analysis", expanded=True):
+            col_a1, col_a2 = st.columns(2)
+            
+            with col_a1:
+                st.markdown("**Intent:**")
+                st.info(st.session_state.text_analysis.get("intent", "N/A"))
+                
+                st.markdown("**Objectives:**")
+                objectives = st.session_state.text_analysis.get("objectives", [])
+                if objectives:
+                    for obj in objectives:
+                        st.write(f"• {obj}")
+                else:
+                    st.write("None specified")
+            
+            with col_a2:
+                st.markdown("**Policy Type:**")
+                st.write(st.session_state.text_analysis.get("policy_type", "other").replace("_", " ").title())
+                
+                st.markdown("**Risk Level:**")
+                risk_level = st.session_state.text_analysis.get("risk_level", "medium")
+                if risk_level == "critical":
+                    st.error(risk_level.upper())
+                elif risk_level == "high":
+                    st.warning(risk_level.upper())
+                else:
+                    st.info(risk_level.upper())
+            
+            st.markdown("**Key Requirements:**")
+            requirements = st.session_state.text_analysis.get("key_requirements", [])
+            if requirements:
+                for req in requirements:
+                    st.write(f"• {req}")
+            else:
+                st.write("None specified")
+            
+            st.markdown("**Compliance Frameworks:**")
+            frameworks = st.session_state.text_analysis.get("compliance_frameworks", [])
+            if frameworks:
+                st.write(", ".join(frameworks))
+            else:
+                st.write("None specified")
+            
+            st.markdown("**Summary:**")
+            st.write(st.session_state.text_analysis.get("summary", "N/A"))
+    
+    # Show generated policy status
+    if st.session_state.generated_policy_path and os.path.exists(st.session_state.generated_policy_path):
+        st.markdown("#### Generated Policy")
+        policy_filename = os.path.basename(st.session_state.generated_policy_path)
         
-        for rule in manager.extracted_rules:
-            with st.container():
-                col_rule1, col_rule2 = st.columns([3, 1])
-                
-                with col_rule1:
-                    st.markdown(f"**Rule {rule['id']}**")
-                    source_name = rule.get('source_document_name') or next((d['name'] for d in manager.documents if d['id'] == rule['source_document']), 'Unknown')
-                    extraction_method = rule.get('extraction_method', 'keyword_matching')
-                    method_badge = "🤖 OpenAI" if extraction_method == "openai_gpt4o" else "🔍 Keywords"
-                    st.caption(f"Source: {source_name} | {method_badge}")
-                    
-                    st.write("**Rule Text:**", rule['text'])
-                    
-                    if rule.get('rule_type'):
-                        st.caption(f"**Type:** {rule['rule_type'].replace('_', ' ').title()}")
-                    
-                    if rule.get('key_requirements'):
-                        with st.expander("Key Requirements", expanded=False):
-                            for req in rule['key_requirements']:
-                                st.write(f"• {req}")
-                    
-                    if rule.get('time_periods'):
-                        st.caption(f"**Time Periods:** {', '.join(rule['time_periods'])}")
-                    
-                    if rule.get('context'):
-                        st.caption(f"**Context:** {rule['context']}")
-                
-                with col_rule2:
-                    confidence = rule.get('confidence', 0.5)
-                    st.metric("Confidence", f"{confidence:.0%}")
-                    if confidence >= 0.8:
-                        st.success("High")
-                    elif confidence >= 0.6:
-                        st.info("Medium")
-                    else:
-                        st.warning("Low")
-                
-                st.markdown("---")
-    else:
-        st.info("No rules extracted yet. Upload documents and click 'Parse All Documents for Rules'.")
-    
-    st.markdown("---")
-    
-    # Conflict Resolution
-    st.markdown("### Policy Conflict Resolution")
-    st.caption("Resolve conflicts between hard ontology baseline and soft ontology rules")
-    
-    # Mock conflict detection - in production, this would check against actual hard ontology
-    if st.button("Detect Conflicts"):
-        st.info("Conflict detection requires integration with hard ontology policy. This feature will be enhanced in future updates.")
-    
-    if manager.conflict_resolutions:
-        st.write(f"**{len(manager.conflict_resolutions)} conflict resolution(s)**")
-        for resolution in manager.conflict_resolutions:
-            with st.container():
-                st.markdown(f"**Resolution {resolution['id']}**")
-                st.write(f"Decision: {resolution.get('resolution', 'Pending')}")
-                if resolution.get('resolution_notes'):
-                    st.caption(f"Notes: {resolution['resolution_notes']}")
-                st.markdown("---")
-    
-    st.markdown("---")
-    
-    # Integration Status
-    st.markdown("### Integration Status")
-    active_rules = manager.get_active_rules()
-    st.write(f"**Active Rules:** {len(active_rules)}")
-    st.write(f"**Total Documents:** {len(manager.documents)}")
-    st.write(f"**Extracted Rules:** {len(manager.extracted_rules)}")
-    st.write(f"**Resolved Conflicts:** {len(manager.conflict_resolutions)}")
-    
-    if len(active_rules) > 0:
-        st.success("✓ Soft ontology is active and supplementing hard ontology baseline")
-    else:
-        st.info("Soft ontology is not yet active. Upload documents and extract rules to enable.")
+        st.success(f"✅ Policy generated: `{policy_filename}`")
+        
+        col_open, col_view = st.columns(2)
+        
+        with col_open:
+            if st.button("📝 Open in Policy Editor", type="primary", use_container_width=True):
+                add_log(f"Opening policy '{policy_filename}' in policy editor", "info")
+                # Set the selected policy in session state
+                st.session_state.editor_selected_policy = policy_filename
+                # Add flag to indicate this is a newly generated policy
+                st.session_state.policy_just_generated = True
+                st.switch_page("pages/policy_editor.py")
+        
+        with col_view:
+            if st.button("👁️ Preview Policy", use_container_width=True):
+                try:
+                    with open(st.session_state.generated_policy_path, 'r') as f:
+                        policy_data = json.load(f)
+                    st.json(policy_data)
+                except Exception as e:
+                    st.error(f"Failed to load policy: {str(e)}")
+else:
+    st.info("Enter text in the Input Text section above to begin policy generation.")
 
-# Export/Import section at bottom
 st.markdown("---")
+
+# ============================================================================
+# 3. POLICY CONFLICT RESOLUTION SECTION
+# ============================================================================
+st.markdown("### Policy Conflict Resolution")
+st.caption("Resolve conflicts between hard ontology baseline and soft ontology rules")
+
+# Mock conflict detection - in production, this would check against actual hard ontology
+if st.button("Detect Conflicts"):
+    st.info("Conflict detection requires integration with hard ontology policy. This feature will be enhanced in future updates.")
+
+if manager.conflict_resolutions:
+    st.write(f"**{len(manager.conflict_resolutions)} conflict resolution(s)**")
+    for resolution in manager.conflict_resolutions:
+        with st.container():
+            st.markdown(f"**Resolution {resolution['id']}**")
+            st.write(f"Decision: {resolution.get('resolution', 'Pending')}")
+            if resolution.get('resolution_notes'):
+                st.caption(f"Notes: {resolution['resolution_notes']}")
+            st.markdown("---")
+
+st.markdown("---")
+
+# ============================================================================
+# 4. INTEGRATION STATUS SECTION
+# ============================================================================
+st.markdown("### Integration Status")
+active_rules = manager.get_active_rules()
+st.write(f"**Active Rules:** {len(active_rules)}")
+st.write(f"**Total Documents:** {len(manager.documents)}")
+st.write(f"**Extracted Rules:** {len(manager.extracted_rules)}")
+st.write(f"**Resolved Conflicts:** {len(manager.conflict_resolutions)}")
+
+if len(active_rules) > 0:
+    st.success("✓ Soft ontology is active and supplementing hard ontology baseline")
+else:
+    st.info("Soft ontology is not yet active. Enter text and generate policies to enable.")
+
+st.markdown("---")
+
+# ============================================================================
+# 5. EXPORT/IMPORT SECTION
+# ============================================================================
 st.markdown("### Export/Import")
 col_exp1, col_exp2 = st.columns(2)
 
 with col_exp1:
     if st.button("Export Soft Ontology State"):
         state = manager.to_dict()
-        import json
         state_json = json.dumps(state, indent=2)
         st.download_button(
             label="Download JSON",

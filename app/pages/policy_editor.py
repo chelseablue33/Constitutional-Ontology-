@@ -49,6 +49,7 @@ def load_policy_json(policy_filename: str) -> Optional[Dict[str, Any]]:
     except Exception as e:
         return None
 
+# Refresh policy files list (in case new policies were generated)
 policy_files = get_policy_files()
 
 if not policy_files:
@@ -56,7 +57,15 @@ if not policy_files:
     st.stop()
 
 # Get current selection or default to first file
+# If a policy was just generated, use that one
 current_policy = st.session_state.get("editor_selected_policy", policy_files[0] if policy_files else None)
+
+# Ensure the selected policy exists in the file list
+if current_policy and current_policy not in policy_files:
+    # Policy was deleted or renamed, reset to first available
+    current_policy = policy_files[0] if policy_files else None
+    st.session_state.editor_selected_policy = current_policy
+
 selected_policy = st.selectbox(
     "Select Policy File",
     options=policy_files,
@@ -74,6 +83,11 @@ policy = load_policy_json(selected_policy)
 if not policy:
     st.error(f"Failed to load policy file: {selected_policy}")
     st.stop()
+
+# Show notification if policy was just generated
+if st.session_state.get("policy_just_generated", False) and selected_policy == st.session_state.get("editor_selected_policy"):
+    st.success("✅ **Generated Policy Loaded!** This policy was automatically generated from your document. Review and edit as needed.")
+    st.session_state.policy_just_generated = False  # Clear the flag
 
 st.markdown("---")
 

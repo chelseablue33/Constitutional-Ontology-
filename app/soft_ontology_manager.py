@@ -4,7 +4,7 @@ Manages document uploads, text extraction, and policy conflict resolution
 """
 
 import io
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 import json
 import streamlit as st
@@ -18,6 +18,9 @@ class SoftOntologyManager:
         self.documents: List[Dict[str, Any]] = []
         self.extracted_rules: List[Dict[str, Any]] = []
         self.conflict_resolutions: List[Dict[str, Any]] = []
+        self.document_analyses: Dict[str, Dict[str, Any]] = {}  # Store analysis results by document_id
+        self.generated_policies: Dict[str, str] = {}  # Store generated policy file paths by document_id
+        self._last_api_key_error: Optional[str] = None
     
     def add_document(self, file_name: str, file_content: bytes, file_type: str) -> Dict[str, Any]:
         """Add a document to the soft ontology collection"""
@@ -72,38 +75,73 @@ class SoftOntologyManager:
     
     def _get_openai_client(self) -> Optional[OpenAI]:
         """Get OpenAI client using Streamlit secrets"""
+        api_key = None
+        error_details = []
+        
+        # Method 1: Try [openai].api_key
         try:
-            # Try to get API key from secrets - multiple fallback methods
-            api_key = None
-            
-            # Method 1: Try [openai].api_key
+            if hasattr(st, 'secrets') and st.secrets:
+                if "openai" in st.secrets:
+                    openai_secret = st.secrets["openai"]
+                    # Try dict-like access (works for both dict and Streamlit secret objects)
+                    try:
+                        api_key = openai_secret.get("api_key") if hasattr(openai_secret, 'get') else openai_secret["api_key"]
+                        if api_key:
+                            error_details.append(f"Found key via [openai].api_key (length: {len(api_key)})")
+                    except (KeyError, TypeError, AttributeError) as e:
+                        error_details.append(f"Could not access api_key from [openai] section: {str(e)}")
+        except Exception as e:
+            error_details.append(f"Error accessing [openai].api_key: {str(e)}")
+        
+        # Method 2: Try top-level OPENAI_API_KEY
+        if not api_key:
             try:
                 if hasattr(st, 'secrets') and st.secrets:
-                    if "openai" in st.secrets:
-                        api_key = st.secrets["openai"].get("api_key")
-            except (AttributeError, KeyError, TypeError):
-                pass
-            
-            # Method 2: Try top-level OPENAI_API_KEY
-            if not api_key:
-                try:
-                    if hasattr(st, 'secrets') and st.secrets:
-                        api_key = st.secrets.get("OPENAI_API_KEY")
-                except (AttributeError, KeyError, TypeError):
-                    pass
-            
-            # Method 3: Try environment variable as last resort
-            if not api_key:
+                    api_key = st.secrets.get("OPENAI_API_KEY")
+                    if api_key:
+                        error_details.append(f"Found key via OPENAI_API_KEY (length: {len(api_key)})")
+            except Exception as e:
+                error_details.append(f"Error accessing OPENAI_API_KEY: {str(e)}")
+        
+        # Method 3: Try environment variable as last resort
+        if not api_key:
+            try:
                 import os
                 api_key = os.environ.get("OPENAI_API_KEY")
-            
-            if not api_key or api_key.startswith("sk-your-") or api_key.startswith("sk-proj-") and len(api_key) < 50:
-                # Invalid or placeholder key
-                return None
-            
-            return OpenAI(api_key=api_key)
+                if api_key:
+                    error_details.append(f"Found key via environment variable (length: {len(api_key)})")
+            except Exception as e:
+                error_details.append(f"Error accessing environment variable: {str(e)}")
+        
+        # Validate API key
+        if not api_key:
+            # Store error details for debugging
+            self._last_api_key_error = "No API key found. " + " | ".join(error_details) if error_details else "Checked all sources."
+            return None
+        
+        # Check for placeholder keys
+        if api_key.startswith("sk-your-") or (api_key.startswith("sk-proj-") and len(api_key) < 50):
+            self._last_api_key_error = f"Placeholder or invalid API key detected (starts with 'sk-your-' or 'sk-proj-' with length < 50)"
+            return None
+        
+        # Validate key format (should start with sk- and be reasonable length)
+        if not api_key.startswith("sk-"):
+            self._last_api_key_error = f"API key doesn't start with 'sk-' (format may be invalid)"
+            return None
+        
+        if len(api_key) < 20:
+            self._last_api_key_error = f"API key too short (length: {len(api_key)}, expected at least 20 characters)"
+            return None
+        
+        # Try to create the client
+        try:
+            client = OpenAI(api_key=api_key)
+            # Clear any previous errors
+            if hasattr(self, '_last_api_key_error'):
+                delattr(self, '_last_api_key_error')
+            return client
         except Exception as e:
-            # Log error but don't raise - return None to trigger fallback
+            self._last_api_key_error = f"Failed to create OpenAI client: {str(e)}"
             return None
     
     def parse_policy_rules(self, document_id: str, use_openai: bool = True) -> List[Dict[str, Any]]:
@@ -379,6 +417,607 @@ Return a JSON object with this exact structure:
         
         return active_rules
     
+    def analyze_document_intent(self, document_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Analyze document to understand intent, objectives, and policy context using LLM.
+        Returns structured analysis with intent, objectives, policy_type, key_requirements, etc.
+        """
+        document = next((doc for doc in self.documents if doc["id"] == document_id), None)
+        if not document or not document.get("extracted_text"):
+            return None
+        
+        # Check if already analyzed
+        if document_id in self.document_analyses:
+            return self.document_analyses[document_id]
+        
+        client = self._get_openai_client()
+        if not client:
+            return None
+        
+        text = document["extracted_text"]
+        document_name = document.get("name", "Unknown")
+        
+        # Truncate text if too long (keep last 20000 chars to preserve context)
+        text_to_analyze = text if len(text) <= 20000 else text[-20000:]
+        
+        prompt = f"""Analyze the following organizational policy document to understand its intent, objectives, and policy context.
+
+Document Name: {document_name}
+
+Text Content:
+{text_to_analyze}
+
+Your task is to provide a comprehensive analysis of this document that will be used to generate a governance policy. Analyze:
+
+1. **Intent**: What is the primary purpose and intent of this document? What is it trying to achieve?
+2. **Objectives**: What are the main goals, objectives, and desired outcomes?
+3. **Policy Context**: What type of policy or compliance framework does this relate to? (e.g., data retention, access control, security, privacy, operational compliance)
+4. **Key Requirements**: What are the specific requirements, constraints, and obligations mentioned?
+5. **Compliance Frameworks**: Are there any regulatory frameworks, standards, or compliance requirements referenced? (e.g., OCC, FDIC, GDPR, HIPAA, SOX)
+6. **Scope**: What is the scope of application? (e.g., all data, specific data types, specific operations)
+7. **Risk Level**: What is the overall risk level or sensitivity? (low, medium, high, critical)
+
+Return a JSON object with this exact structure:
+{{
+  "intent": "Clear statement of the document's primary purpose and what it aims to achieve",
+  "objectives": ["Objective 1", "Objective 2", "Objective 3"],
+  "policy_type": "data_retention|access_control|compliance|security|privacy|operational|other",
+  "key_requirements": ["Requirement 1", "Requirement 2", "Requirement 3"],
+  "compliance_frameworks": ["Framework 1", "Framework 2"],
+  "scope": "Description of what this policy applies to",
+  "risk_level": "low|medium|high|critical",
+  "summary": "Brief 2-3 sentence summary of the document's purpose and key points"
+}}"""
+
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are an expert policy analyst specializing in understanding organizational documents and extracting their intent, objectives, and policy context. Your analysis will be used to generate governance policies, so be thorough and accurate."
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.3,
+                max_tokens=2000
+            )
+            
+            if not response or not response.choices or not response.choices[0].message.content:
+                return None
+            
+            result = json.loads(response.choices[0].message.content)
+            
+            # Store analysis
+            analysis = {
+                "document_id": document_id,
+                "document_name": document_name,
+                "analyzed_date": datetime.utcnow().isoformat() + "Z",
+                "intent": result.get("intent", ""),
+                "objectives": result.get("objectives", []),
+                "policy_type": result.get("policy_type", "other"),
+                "key_requirements": result.get("key_requirements", []),
+                "compliance_frameworks": result.get("compliance_frameworks", []),
+                "scope": result.get("scope", ""),
+                "risk_level": result.get("risk_level", "medium"),
+                "summary": result.get("summary", "")
+            }
+            
+            self.document_analyses[document_id] = analysis
+            return analysis
+            
+        except json.JSONDecodeError:
+            return None
+        except Exception:
+            return None
+    
+    def generate_policy_from_document(self, document_id: str, baseline_policy_path: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """
+        Generate a complete policy JSON from document analysis and extracted rules.
+        Uses LLM to create a full policy structure based on document intent and requirements.
+        """
+        document = next((doc for doc in self.documents if doc["id"] == document_id), None)
+        if not document:
+            return None
+        
+        # Get or perform analysis
+        analysis = self.document_analyses.get(document_id)
+        if not analysis:
+            analysis = self.analyze_document_intent(document_id)
+            if not analysis:
+                return None
+        
+        # Get extracted rules for this document
+        document_rules = [rule for rule in self.extracted_rules if rule.get("source_document") == document_id]
+        
+        client = self._get_openai_client()
+        if not client:
+            return None
+        
+        # Load baseline policy as template if provided
+        baseline_template = {}
+        if baseline_policy_path:
+            try:
+                import os
+                if os.path.exists(baseline_policy_path):
+                    with open(baseline_policy_path, 'r') as f:
+                        baseline_template = json.load(f)
+            except Exception:
+                pass
+        
+        # Prepare context for policy generation
+        analysis_summary = f"""
+Document Analysis:
+- Intent: {analysis.get('intent', 'N/A')}
+- Objectives: {', '.join(analysis.get('objectives', []))}
+- Policy Type: {analysis.get('policy_type', 'other')}
+- Key Requirements: {', '.join(analysis.get('key_requirements', []))}
+- Compliance Frameworks: {', '.join(analysis.get('compliance_frameworks', []))}
+- Scope: {analysis.get('scope', 'N/A')}
+- Risk Level: {analysis.get('risk_level', 'medium')}
+- Summary: {analysis.get('summary', 'N/A')}
+"""
+        
+        extracted_rules_text = ""
+        if document_rules:
+            extracted_rules_text = "\nExtracted Rules:\n"
+            for rule in document_rules[:10]:  # Limit to first 10 rules
+                extracted_rules_text += f"- {rule.get('text', '')} (Type: {rule.get('rule_type', 'other')})\n"
+        
+        # Create policy generation prompt
+        prompt = f"""Generate a complete governance policy JSON based on the following document analysis and extracted rules.
+
+{analysis_summary}
+
+{extracted_rules_text}
+
+Generate a complete policy JSON that follows this structure (use the baseline policy as a template but adapt it based on the document analysis):
+
+Required Structure:
+{{
+  "policy_id": "unique_policy_id_based_on_document",
+  "policy_version": "1.0.0",
+  "created": "YYYY-MM-DD",
+  "description": "Policy description based on document intent and objectives",
+  "dials": {{
+    "autonomy": {{"level": "L1-L3", "label": "...", "description": "..."}},
+    "personalization": {{"level": "L1-L3", "label": "...", "description": "..."}},
+    "memory": {{"level": "L1-L3", "label": "...", "description": "..."}},
+    "inter_agent": {{"level": "L1-L3", "label": "...", "description": "..."}}
+  }},
+  "gates": {{
+    "U-I": {{"name": "User Inbound", "direction": "user_to_agent", "allow": [...], "controls": [...], "deny": [...]}},
+    "U-O": {{"name": "User Outbound", "direction": "agent_to_user", "allow": [...], "controls": [...], "deny": [...]}},
+    "S-I": {{"name": "System Inbound", "direction": "system_to_agent", "allow": [...], "controls": [...], "deny": [...]}},
+    "S-O": {{"name": "System Outbound", "direction": "agent_to_system", "allow": [...], "controls": [...], "deny": [...]}},
+    "M-I": {{"name": "Memory Inbound", "direction": "memory_to_agent", "allow": [...], "controls": [...], "deny": [...]}},
+    "M-O": {{"name": "Memory Outbound", "direction": "agent_to_memory", "allow": [...], "controls": [...], "deny": [...]}},
+    "A-I": {{"name": "Agent Inbound", "direction": "other_agent_to_agent", "allow": [...], "controls": [...], "deny": [...]}},
+    "A-O": {{"name": "Agent Outbound", "direction": "agent_to_other_agent", "allow": [...], "controls": [...], "deny": [...]}}
+  }},
+  "overlays_enabled": [],
+  "overlays": {{}},
+  "rules": [
+    {{
+      "rule_id": "R-XXX",
+      "baseline": false,
+      "enabled": true,
+      "description": "Rule description based on document requirements",
+      "severity": "deny|escalate|allow",
+      "policy_clause_ref": "§X.X",
+      "applies_to_gate": "U-I|U-O|S-I|S-O|M-I|M-O|A-I|A-O",
+      "applies_to_control": "control_name"
+    }}
+  ]
+}}
+
+Instructions:
+1. Create a policy_id based on the document name (sanitized, lowercase, underscores)
+2. Set appropriate dial levels based on risk_level and policy_type (higher risk = more restrictive)
+3. Map document requirements to appropriate gates:
+   - Data retention requirements → M-O (Memory Outbound) with retention_policy controls
+   - Access control requirements → U-I, S-O gates
+   - Security requirements → S-I, S-O gates with appropriate controls
+   - Privacy requirements → U-O, M-O gates with redaction controls
+4. Create rules based on extracted rules and key requirements from analysis
+5. Set severity appropriately: "deny" for critical restrictions, "escalate" for approval requirements, "allow" for permissions
+6. Ensure all 8 gates are present with appropriate allow/controls/deny arrays
+7. Make rules specific and actionable based on the document content
+8. Include all required fields in rules
+
+Return ONLY valid JSON, no markdown formatting, no code blocks."""
+
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are an expert policy engineer specializing in creating governance policies from organizational documents. Generate complete, valid JSON policy structures that map document requirements to appropriate gates, controls, and rules. Always return valid JSON only."
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.2,
+                max_tokens=8000
+            )
+            
+            if not response or not response.choices or not response.choices[0].message.content:
+                return None
+            
+            policy_json = json.loads(response.choices[0].message.content)
+            
+            # Validate and ensure required fields exist
+            if not policy_json.get("policy_id"):
+                # Generate policy_id from document name
+                doc_name = document.get("name", "generated_policy")
+                policy_id = doc_name.lower().replace(" ", "_").replace(".", "_").replace("-", "_")
+                policy_id = ''.join(c for c in policy_id if c.isalnum() or c == '_')[:50]
+                policy_json["policy_id"] = policy_id
+            
+            if not policy_json.get("policy_version"):
+                policy_json["policy_version"] = "1.0.0"
+            
+            if not policy_json.get("created"):
+                policy_json["created"] = datetime.utcnow().strftime("%Y-%m-%d")
+            
+            # Ensure all gates exist
+            required_gates = ["U-I", "U-O", "S-I", "S-O", "M-I", "M-O", "A-I", "A-O"]
+            if "gates" not in policy_json:
+                policy_json["gates"] = {}
+            
+            for gate_id in required_gates:
+                if gate_id not in policy_json["gates"]:
+                    policy_json["gates"][gate_id] = {
+                        "name": f"{gate_id} Gate",
+                        "direction": "unknown",
+                        "allow": [],
+                        "controls": [],
+                        "deny": []
+                    }
+            
+            # Ensure rules array exists
+            if "rules" not in policy_json:
+                policy_json["rules"] = []
+            
+            # Ensure overlays exist
+            if "overlays_enabled" not in policy_json:
+                policy_json["overlays_enabled"] = []
+            if "overlays" not in policy_json:
+                policy_json["overlays"] = {}
+            
+            return policy_json
+            
+        except json.JSONDecodeError as e:
+            return None
+        except Exception:
+            return None
+    
+    def analyze_text_intent(self, text: str, text_name: str = "Input Text") -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """
+        Analyze text directly to understand intent, objectives, and policy context using LLM.
+        Returns structured analysis with intent, objectives, policy_type, key_requirements, etc.
+        Returns tuple: (analysis_dict, error_message)
+        """
+        if not text or not text.strip():
+            return None, "No text provided"
+        
+        # Use a session key for text-based analysis
+        text_key = f"text_{hash(text[:100])}"
+        
+        # Check if already analyzed
+        if text_key in self.document_analyses:
+            return self.document_analyses[text_key], None
+        
+        client = self._get_openai_client()
+        if not client:
+            error_msg = getattr(self, '_last_api_key_error', None) or "OpenAI API key not found. Please configure your API key in `.streamlit/secrets.toml`"
+            return None, error_msg
+        
+        # Truncate text if too long (keep last 20000 chars to preserve context)
+        text_to_analyze = text if len(text) <= 20000 else text[-20000:]
+        
+        prompt = f"""Analyze the following organizational policy document to understand its intent, objectives, and policy context.
+
+Document Name: {text_name}
+
+Text Content:
+{text_to_analyze}
+
+Your task is to provide a comprehensive analysis of this document that will be used to generate a governance policy. Analyze:
+
+1. **Intent**: What is the primary purpose and intent of this document? What problem is it trying to solve or what goal is it trying to achieve?
+
+2. **Objectives**: List the main objectives or goals that this document aims to accomplish. Provide 3-5 specific objectives.
+
+3. **Policy Type**: Categorize this as one of: data_retention, access_control, security, privacy, compliance, operational, financial, or other.
+
+4. **Key Requirements**: Extract the most important requirements, constraints, or rules mentioned in the document. List 5-10 key requirements.
+
+5. **Compliance Frameworks**: Identify any compliance frameworks, standards, or regulations mentioned (e.g., GDPR, HIPAA, SOC2, PCI-DSS, ISO 27001, etc.). If none are mentioned, return an empty array.
+
+6. **Scope**: What is the scope of this policy? Who or what does it apply to? (e.g., "All employees", "Customer data", "Production systems", etc.)
+
+7. **Risk Level**: Assess the risk level as: critical, high, medium, or low based on the sensitivity and impact of the requirements.
+
+8. **Summary**: Provide a 2-3 sentence summary of the document's purpose and key points.
+
+Return your analysis as a JSON object with the following structure:
+{{
+  "intent": "string describing the primary intent",
+  "objectives": ["objective1", "objective2", "objective3"],
+  "policy_type": "data_retention|access_control|security|privacy|compliance|operational|financial|other",
+  "key_requirements": ["requirement1", "requirement2", "requirement3"],
+  "compliance_frameworks": ["framework1", "framework2"],
+  "scope": "string describing scope",
+  "risk_level": "critical|high|medium|low",
+  "summary": "2-3 sentence summary"
+}}
+
+Return ONLY valid JSON, no markdown formatting, no code blocks."""
+
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are an expert policy analyst specializing in understanding organizational documents and extracting their intent, objectives, and policy requirements. Always return valid JSON only."
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.3,
+                max_tokens=2000
+            )
+            
+            if not response or not response.choices or not response.choices[0].message.content:
+                return None, "No response from OpenAI API"
+            
+            analysis = json.loads(response.choices[0].message.content)
+            
+            # Store analysis with text key
+            self.document_analyses[text_key] = analysis
+            return analysis, None
+            
+        except json.JSONDecodeError as e:
+            return None, f"Failed to parse JSON response: {str(e)}"
+        except Exception as e:
+            return None, f"OpenAI API error: {str(e)}"
+    
+    def generate_policy_from_text(self, text: str, baseline_policy_path: Optional[str] = None, text_name: str = "Input Text") -> Optional[Dict[str, Any]]:
+        """
+        Generate a complete policy JSON from text analysis.
+        Uses LLM to create a full policy structure based on text intent and requirements.
+        """
+        if not text or not text.strip():
+            return None
+        
+        text_key = f"text_{hash(text[:100])}"
+        
+        # Get or perform analysis
+        analysis = self.document_analyses.get(text_key)
+        if not analysis:
+            analysis, error_msg = self.analyze_text_intent(text, text_name)
+            if not analysis:
+                return None
+        
+        # Get extracted rules for this text (if any)
+        document_rules = [rule for rule in self.extracted_rules if rule.get("source_document") == text_key]
+        
+        client = self._get_openai_client()
+        if not client:
+            return None
+        
+        # Load baseline policy as template if provided
+        baseline_template = {}
+        if baseline_policy_path:
+            try:
+                import os
+                if os.path.exists(baseline_policy_path):
+                    with open(baseline_policy_path, 'r') as f:
+                        baseline_template = json.load(f)
+            except Exception:
+                pass
+        
+        # Prepare context for policy generation
+        analysis_summary = f"""
+Document Analysis:
+- Intent: {analysis.get('intent', 'N/A')}
+- Objectives: {', '.join(analysis.get('objectives', []))}
+- Policy Type: {analysis.get('policy_type', 'other')}
+- Key Requirements: {', '.join(analysis.get('key_requirements', []))}
+- Compliance Frameworks: {', '.join(analysis.get('compliance_frameworks', []))}
+- Scope: {analysis.get('scope', 'N/A')}
+- Risk Level: {analysis.get('risk_level', 'medium')}
+- Summary: {analysis.get('summary', 'N/A')}
+"""
+        
+        extracted_rules_text = ""
+        if document_rules:
+            extracted_rules_text = "\nExtracted Rules:\n"
+            for rule in document_rules[:10]:  # Limit to first 10 rules
+                extracted_rules_text += f"- {rule.get('text', '')} (Type: {rule.get('rule_type', 'other')})\n"
+        
+        # Create policy generation prompt
+        prompt = f"""Generate a complete governance policy JSON based on the following document analysis and extracted rules.
+
+{analysis_summary}
+
+{extracted_rules_text}
+
+Generate a complete policy JSON that follows this structure (use the baseline policy as a template but adapt it based on the document analysis):
+
+Required Structure:
+{{
+  "policy_id": "unique_policy_id_based_on_document",
+  "policy_version": "1.0.0",
+  "created": "YYYY-MM-DD",
+  "description": "Policy description based on document intent and objectives",
+  "dials": {{
+    "autonomy": {{"level": "L1-L3", "label": "...", "description": "..."}},
+    "personalization": {{"level": "L1-L3", "label": "...", "description": "..."}},
+    "memory": {{"level": "L1-L3", "label": "...", "description": "..."}},
+    "inter_agent": {{"level": "L1-L3", "label": "...", "description": "..."}}
+  }},
+  "gates": {{
+    "U-I": {{"name": "User Inbound", "direction": "user_to_agent", "allow": [...], "controls": [...], "deny": [...]}},
+    "U-O": {{"name": "User Outbound", "direction": "agent_to_user", "allow": [...], "controls": [...], "deny": [...]}},
+    "S-I": {{"name": "System Inbound", "direction": "system_to_agent", "allow": [...], "controls": [...], "deny": [...]}},
+    "S-O": {{"name": "System Outbound", "direction": "agent_to_system", "allow": [...], "controls": [...], "deny": [...]}},
+    "M-I": {{"name": "Memory Inbound", "direction": "memory_to_agent", "allow": [...], "controls": [...], "deny": [...]}},
+    "M-O": {{"name": "Memory Outbound", "direction": "agent_to_memory", "allow": [...], "controls": [...], "deny": [...]}},
+    "A-I": {{"name": "Agent Inbound", "direction": "other_agent_to_agent", "allow": [...], "controls": [...], "deny": [...]}},
+    "A-O": {{"name": "Agent Outbound", "direction": "agent_to_other_agent", "allow": [...], "controls": [...], "deny": [...]}}
+  }},
+  "overlays_enabled": [],
+  "overlays": {{}},
+  "rules": [
+    {{
+      "rule_id": "R-XXX",
+      "baseline": false,
+      "enabled": true,
+      "description": "Rule description based on document requirements",
+      "severity": "deny|escalate|allow",
+      "policy_clause_ref": "§X.X",
+      "applies_to_gate": "U-I|U-O|S-I|S-O|M-I|M-O|A-I|A-O",
+      "applies_to_control": "control_name"
+    }}
+  ]
+}}
+
+Instructions:
+1. Create a policy_id based on the text name (sanitized, lowercase, underscores)
+2. Set appropriate dial levels based on risk_level and policy_type (higher risk = more restrictive)
+3. Map document requirements to appropriate gates:
+   - Data retention requirements → M-O (Memory Outbound) with retention_policy controls
+   - Access control requirements → U-I, S-O gates
+   - Security requirements → S-I, S-O gates with appropriate controls
+   - Privacy requirements → U-O, M-O gates with redaction controls
+4. Create rules based on extracted rules and key requirements from analysis
+5. Set severity appropriately: "deny" for critical restrictions, "escalate" for approval requirements, "allow" for permissions
+6. Ensure all 8 gates are present with appropriate allow/controls/deny arrays
+7. Make rules specific and actionable based on the document content
+8. Include all required fields in rules
+
+Return ONLY valid JSON, no markdown formatting, no code blocks."""
+
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are an expert policy engineer specializing in creating governance policies from organizational documents. Generate complete, valid JSON policy structures that map document requirements to appropriate gates, controls, and rules. Always return valid JSON only."
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.2,
+                max_tokens=8000
+            )
+            
+            if not response or not response.choices or not response.choices[0].message.content:
+                return None
+            
+            policy_json = json.loads(response.choices[0].message.content)
+            
+            # Validate and ensure required fields exist
+            if not policy_json.get("policy_id"):
+                # Generate policy_id from text name
+                policy_id = text_name.lower().replace(" ", "_").replace(".", "_").replace("-", "_")
+                policy_id = ''.join(c for c in policy_id if c.isalnum() or c == '_')[:50]
+                policy_json["policy_id"] = policy_id
+            
+            if not policy_json.get("policy_version"):
+                policy_json["policy_version"] = "1.0.0"
+            
+            if not policy_json.get("created"):
+                policy_json["created"] = datetime.utcnow().strftime("%Y-%m-%d")
+            
+            # Ensure all gates exist
+            required_gates = ["U-I", "U-O", "S-I", "S-O", "M-I", "M-O", "A-I", "A-O"]
+            if "gates" not in policy_json:
+                policy_json["gates"] = {}
+            
+            for gate_id in required_gates:
+                if gate_id not in policy_json["gates"]:
+                    policy_json["gates"][gate_id] = {
+                        "name": f"{gate_id} Gate",
+                        "direction": "unknown",
+                        "allow": [],
+                        "controls": [],
+                        "deny": []
+                    }
+            
+            # Ensure rules array exists
+            if "rules" not in policy_json:
+                policy_json["rules"] = []
+            
+            # Ensure overlays exist
+            if "overlays_enabled" not in policy_json:
+                policy_json["overlays_enabled"] = []
+            if "overlays" not in policy_json:
+                policy_json["overlays"] = {}
+            
+            return policy_json
+            
+        except json.JSONDecodeError as e:
+            return None
+        except Exception:
+            return None
+    
+    def save_generated_policy(self, document_id: str, policy_json: Dict[str, Any]) -> Optional[str]:
+        """Save generated policy to a JSON file and return the file path"""
+        import os
+        
+        policy_id = policy_json.get("policy_id", f"generated_policy_{document_id}")
+        parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        policy_filename = f"{policy_id}.json"
+        policy_path = os.path.join(parent_dir, policy_filename)
+        
+        try:
+            with open(policy_path, 'w') as f:
+                json.dump(policy_json, f, indent=2)
+            
+            # Store the file path
+            self.generated_policies[document_id] = policy_path
+            return policy_path
+        except Exception:
+            return None
+    
+    def save_generated_policy_from_text(self, text_key: str, policy_json: Dict[str, Any]) -> Optional[str]:
+        """Save generated policy from text to a JSON file and return the file path"""
+        import os
+        
+        policy_id = policy_json.get("policy_id", f"generated_policy_{text_key}")
+        parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        policy_filename = f"{policy_id}.json"
+        policy_path = os.path.join(parent_dir, policy_filename)
+        
+        try:
+            with open(policy_path, 'w') as f:
+                json.dump(policy_json, f, indent=2)
+            
+            # Store the file path
+            self.generated_policies[text_key] = policy_path
+            return policy_path
+        except Exception:
+            return None
+    
     def to_dict(self) -> Dict[str, Any]:
         """Convert manager state to dictionary for serialization"""
         return {
@@ -388,5 +1027,7 @@ Return a JSON object with this exact structure:
             ],
             "extracted_rules": self.extracted_rules,
             "conflict_resolutions": self.conflict_resolutions,
-            "active_rules_count": len(self.get_active_rules())
+            "active_rules_count": len(self.get_active_rules()),
+            "document_analyses": self.document_analyses,
+            "generated_policies": self.generated_policies
         }
